@@ -73,6 +73,7 @@ header.top { display: flex; flex-wrap: wrap; align-items: center; justify-conten
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand h1 { font-size: 26px; line-height: 1.1; margin: 0; letter-spacing: -0.01em; }
 .brand .logo { font-size: 32px; }
+.motto { color: var(--accent); font-size: 14px; font-style: italic; margin-top: 2px; }
 .tagline { color: var(--ink-2); margin: 4px 0 20px; max-width: 70ch; }
 .meta { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; color: var(--ink-2); font-size: 13px; }
 

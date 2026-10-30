@@ -56,7 +56,7 @@ async function main() {
   const balance = BigInt(await conn.getBalance(cfg.agentPubkey));
   log.info('starting', { mode: cfg.mode, wallet: cfg.agentPubkey.toBase58(), balance: formatSol(balance), paused: guard.state() });
   if (balance === 0n) log.warn('agent wallet is empty: simulations need a fee payer with some SOL (0.01 SOL is plenty for shadow mode)');
-  await notifier.alert(`🍞 Crumbs started in ${cfg.mode} mode\nWallet ${cfg.agentPubkey.toBase58()} · ${formatSol(balance)}`);
+  await notifier.alert(`🍞 Crumbs started in ${cfg.mode} mode. To get the bread, you need to eat the crumbs.\nWallet ${cfg.agentPubkey.toBase58()} · ${formatSol(balance)}`);
   await executor.registerJobTypes();
 
   const timers: NodeJS.Timeout[] = [];

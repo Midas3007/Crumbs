@@ -2,6 +2,8 @@
 
 **The agent that eats the crumbs the big bots leave behind.**
 
+*To get the bread, you need to eat the crumbs.*
+
 Solana protocols pay strangers to do their chores: run scheduled tasks, settle markets, liquidate unhealthy
 positions, close expired accounts. Big MEV bots chase the big jobs. Crumbs is an autonomous agent with its own
 small wallet that finds these paid, permissionless chores, **proves each one is profitable by simulating it

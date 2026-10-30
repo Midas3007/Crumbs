@@ -43,7 +43,7 @@ export default async function Page() {
   if (!s) {
     return (
       <main className="wrap">
-        <div className="brand"><span className="logo" aria-hidden="true">🍞</span><h1>Crumbs</h1></div>
+        <div className="brand"><span className="logo" aria-hidden="true">🍞</span><div><h1>Crumbs</h1><div className="motto">To get the bread, you need to eat the crumbs.</div></div></div>
         <p className="tagline">No data yet. The agent pushes a snapshot here every minute once <code>DASHBOARD_URL</code> and <code>DASHBOARD_SECRET</code> are set.</p>
       </main>
     );
@@ -61,7 +61,7 @@ export default async function Page() {
   return (
     <main className="wrap">
       <header className="top">
-        <div className="brand"><span className="logo" aria-hidden="true">🍞</span><h1>Crumbs</h1></div>
+        <div className="brand"><span className="logo" aria-hidden="true">🍞</span><div><h1>Crumbs</h1><div className="motto">To get the bread, you need to eat the crumbs.</div></div></div>
         <div className="meta">
           <span className="pill"><span className="dot" style={{ background: mode.color }} aria-hidden="true" />{mode.text}</span>
           <span>Updated {ago(s.generatedAt)}{stale ? ' · agent may be offline' : ''}</span>

@@ -21,6 +21,7 @@ export async function GET() {
           <div style={{ width: 56, height: 56, borderRadius: 16, background: '#e8b04a', color: '#14130f', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 34, fontWeight: 800 }}>C</div>
           Crumbs · autonomous Solana keeper
         </div>
+        <div style={{ fontSize: 34, fontStyle: 'italic', color: '#e8b04a', marginTop: -24 }}>To get the bread, you need to eat the crumbs.</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ fontSize: 64, fontWeight: 700, lineHeight: 1.1 }}>{headline}</div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 24 }}>
