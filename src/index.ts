@@ -101,6 +101,9 @@ async function main() {
   void publish();
   timers.push(setInterval(publish, 60_000));
 
+  // Proof of life in the log every 5 minutes (shadow mode is otherwise quiet when nothing pays).
+  timers.push(setInterval(() => log.info(executor.heartbeat()), 5 * 60_000));
+
   // Daily summary at 00:00 UTC.
   timers.push(setInterval(() => {
     const d = new Date();

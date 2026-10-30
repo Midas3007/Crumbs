@@ -23,7 +23,12 @@ export async function POST(req: Request) {
     return Response.json({ error: 'invalid JSON' }, { status: 400 });
   }
   if (!isSnapshot(body)) return Response.json({ error: 'not a Crumbs snapshot (version 1)' }, { status: 400 });
-  await saveSnapshot(body);
+  try {
+    await saveSnapshot(body);
+  } catch (e) {
+    // Tell the agent why, so its log says something useful instead of a bare 500.
+    return Response.json({ error: `could not store snapshot: ${e instanceof Error ? e.message : String(e)}` }, { status: 503 });
+  }
   return Response.json({ ok: true, generatedAt: body.generatedAt });
 }
 

@@ -33,6 +33,8 @@ export class Executor {
   private blockhash?: { value: string; lastValidBlockHeight: number; at: number };
   private stopped = false;
   private prices: PriceBook = new Map();
+  /** Counts since start, for the heartbeat log and /status. */
+  readonly stats = { checks: 0, candidates: 0, gone: 0, rejected: 0, shadow: 0, sent: 0, anomalies: 0, errors: 0 };
 
   constructor(
     private conn: Connection,
@@ -81,6 +83,7 @@ export class Executor {
 
   async tick(): Promise<Attempt[]> {
     const results: Attempt[] = [];
+    this.stats.checks++;
     for (const job of this.jobs) {
       let candidates: Candidate[];
       try {
@@ -98,11 +101,31 @@ export class Executor {
         if (last !== undefined && Date.now() - last < (fresh ? FRESH_RETRY_MS : RETRY_COOLDOWN_MS)) continue;
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
         this.lastTried.set(c.id, Date.now());
-        results.push(await this.process(job, c));
+        const a = await this.process(job, c);
+        this.count(a);
+        results.push(a);
       }
     }
     this.pruneCooldowns();
     return results;
+  }
+
+  private count(a: Attempt) {
+    const s = this.stats;
+    s.candidates++;
+    if (a.outcome === 'gone') s.gone++;
+    else if (a.outcome === 'rejected') s.rejected++;
+    else if (a.outcome === 'shadow') s.shadow++;
+    else if (a.outcome === 'anomaly') s.anomalies++;
+    else if (a.outcome === 'error' || a.outcome === 'blocked') s.errors++;
+    else s.sent++;
+  }
+
+  /** One human-readable line: proof of life and what the agent has been doing. */
+  heartbeat(): string {
+    const s = this.stats;
+    return `alive · ${s.checks} checks · ${s.candidates} jobs looked at: ${s.shadow} profitable (shadow), ${s.sent} sent, `
+      + `${s.gone} already taken by other bots, ${s.rejected} not worth it, ${s.anomalies} anomalies, ${s.errors} errors`;
   }
 
   private pruneCooldowns() {
@@ -259,6 +282,7 @@ export class Executor {
       `Live: ${d.landed} landed, ${d.failed} lost · net ${formatSol(d.realizedNetLamports)}`,
       `Shadow: ${d.shadowWins} profitable sims · would have earned ${formatSol(d.shadowNetLamports)}`,
       `Fees paid: ${formatSol(d.feesPaidLamports)}`,
+      `Since start: ${this.heartbeat()}`,
     ].join('\n');
   }
 }
