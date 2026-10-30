@@ -28,6 +28,8 @@ export interface Snapshot {
   jobTypes: { type: string; protocol: string; status: string; crumbs: number; losses: number; realizedNetLamports: string; shadowWins: number; shadowNetLamports: string }[];
   recent: { ts: string; jobType: string; outcome: string; netLamports: string; signature: string | null }[];
   discoveries: { id: number; program: string; programName: string; instruction: string; status: string; confidence: number; summary: string; foundAt: string }[];
+  /** Work done since the agent last started — shows it's busy even on days nothing pays. */
+  activity?: { since: string; checks: number; looked: number; profitable: number; sent: number; takenByOthers: number; notWorthIt: number; anomalies: number; errors: number };
 }
 
 export interface SnapshotInputs {
@@ -38,6 +40,7 @@ export interface SnapshotInputs {
   usdc: number;
   solUsd: number | null;
   now?: Date;
+  activity?: Snapshot['activity'];
 }
 
 export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
@@ -80,6 +83,7 @@ export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
       id: x.id, program: x.program_id, programName: x.program_name, instruction: x.instruction, status: x.status,
       confidence: x.confidence, summary: x.summary, foundAt: new Date(x.created_at).toISOString(),
     })),
+    activity: i.activity,
   };
 }
 

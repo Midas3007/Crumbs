@@ -99,6 +99,10 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .empty { color: var(--muted); padding: 12px 0; font-size: 14px; }
 
 .status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--ink); }
+.activity-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.activity-row div { display: flex; flex-direction: column; }
+.activity-row b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.activity-row span { color: var(--ink-2); font-size: 13px; }
 .feed { list-style: none; margin: 0; padding: 0; }
 .feed li { padding: 10px 0; border-bottom: 1px solid var(--grid); }
 .feed li:last-child { border-bottom: 0; }

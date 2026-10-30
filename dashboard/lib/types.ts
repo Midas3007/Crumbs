@@ -22,6 +22,8 @@ export interface Snapshot {
   jobTypes: { type: string; protocol: string; status: string; crumbs: number; losses: number; realizedNetLamports: string; shadowWins: number; shadowNetLamports: string }[];
   recent: { ts: string; jobType: string; outcome: string; netLamports: string; signature: string | null }[];
   discoveries: { id: number; program: string; programName: string; instruction: string; status: string; confidence: number; summary: string; foundAt: string }[];
+  /** Work done since the agent last started — shows it's busy even on days nothing pays. */
+  activity?: { since: string; checks: number; looked: number; profitable: number; sent: number; takenByOthers: number; notWorthIt: number; anomalies: number; errors: number };
 }
 
 export function isSnapshot(x: unknown): x is Snapshot {

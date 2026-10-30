@@ -98,6 +98,21 @@ export default async function Page() {
         </div>
       </section>
 
+      {s.activity ? (
+        <section className="card activity" aria-label="What the agent is doing" style={{ marginBottom: 16 }}>
+          <h2>On the job</h2>
+          <p className="sub">Since the agent last started ({ago(s.activity.since, Date.parse(s.generatedAt))}). Every job is simulated before anything is sent.</p>
+          <div className="activity-row">
+            <div><b>{s.activity.checks.toLocaleString('en-US')}</b><span>checks</span></div>
+            <div><b>{s.activity.looked.toLocaleString('en-US')}</b><span>jobs simulated</span></div>
+            <div><b>{s.activity.takenByOthers.toLocaleString('en-US')}</b><span>taken first by faster bots</span></div>
+            <div><b>{s.activity.notWorthIt.toLocaleString('en-US')}</b><span>not worth it or not ready yet</span></div>
+            <div><b>{s.activity.profitable.toLocaleString('en-US')}</b><span>profitable</span></div>
+            <div><b>{s.activity.anomalies.toLocaleString('en-US')}</b><span>refused as too good to be true</span></div>
+          </div>
+        </section>
+      ) : null}
+
       <section className="card" aria-label="Daily earnings">
         <h2>Daily earnings, last 14 days</h2>
         <p className="sub">Blue is real profit from transactions on-chain; orange is what shadow-mode simulations say it would have earned.</p>

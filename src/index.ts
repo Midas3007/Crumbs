@@ -51,7 +51,11 @@ async function main() {
   }
 
   const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs);
-  const publisher = new Publisher(conn, cfg, ledger, guard);
+  const publisher = new Publisher(conn, cfg, ledger, guard, 'data/snapshot.json', () => {
+    const s = executor.stats;
+    return { since: executor.startedAt, checks: s.checks, looked: s.candidates, profitable: s.shadow + s.sent, sent: s.sent,
+      takenByOthers: s.gone, notWorthIt: s.rejected, anomalies: s.anomalies, errors: s.errors };
+  });
   const dashLink = cfg.dashboard.url ? `\n${cfg.dashboard.url}` : '';
   summary = () => executor.summaryText() + (publisher.latest ? `\n\n${shareText(publisher.latest)}` : '') + dashLink;
   share = () => (publisher.latest ? shareText(publisher.latest) : 'No data yet — give me a minute.') + dashLink;

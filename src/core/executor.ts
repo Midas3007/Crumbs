@@ -34,6 +34,7 @@ export class Executor {
   private stopped = false;
   private prices: PriceBook = new Map();
   /** Counts since start, for the heartbeat log and /status. */
+  readonly startedAt = new Date().toISOString();
   readonly stats = { checks: 0, candidates: 0, gone: 0, rejected: 0, shadow: 0, sent: 0, anomalies: 0, errors: 0 };
 
   constructor(

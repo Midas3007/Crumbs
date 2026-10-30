@@ -10,6 +10,8 @@ import { associatedTokenAddress, USDC_MINT } from '../core/tokens.js';
 import { PublicKey } from '@solana/web3.js';
 import { buildSnapshot, type Snapshot } from './snapshot.js';
 
+export type ActivitySource = () => Snapshot['activity'];
+
 /**
  * Builds the dashboard snapshot, writes it to disk (data/snapshot.json) and, if DASHBOARD_URL is set,
  * pushes it to the dashboard's /api/snapshot with the shared secret. Plain fetch: nothing extra to install.
@@ -19,7 +21,7 @@ export class Publisher {
   latest?: Snapshot;
   solUsd: number | null = null;
 
-  constructor(private conn: Connection, private cfg: Config, private ledger: Ledger, private guard: Guardrails, private file = 'data/snapshot.json') {}
+  constructor(private conn: Connection, private cfg: Config, private ledger: Ledger, private guard: Guardrails, private file = 'data/snapshot.json', private activity?: ActivitySource) {}
 
   async publish(): Promise<Snapshot> {
     const [price, lamports, usdc] = await Promise.all([
@@ -33,6 +35,7 @@ export class Publisher {
     const snap = buildSnapshot(this.ledger, {
       mode: this.cfg.mode, paused: { paused: state.paused, reason: state.reason },
       wallet: this.cfg.agentPubkey.toBase58(), solLamports: BigInt(lamports), usdc, solUsd: this.solUsd,
+      activity: this.activity?.(),
     });
     this.latest = snap;
 
