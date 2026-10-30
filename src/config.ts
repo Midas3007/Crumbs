@@ -40,6 +40,13 @@ export interface Config {
     coldWallet?: PublicKey;
     jupiterApiUrl: string;
   };
+  discovery: {
+    /** Claude API key; discovery is off without it. */
+    anthropicApiKey?: string;
+    intervalHours: number;
+    /** Also scan programs deployed/upgraded recently, not just the manual list. */
+    includeRecentDeploys: boolean;
+  };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -113,6 +120,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       minSweepLamports: sol(env.MIN_SWEEP_SOL, '0.02'),
       coldWallet: env.COLD_WALLET ? new PublicKey(env.COLD_WALLET) : undefined,
       jupiterApiUrl: env.JUPITER_API_URL ?? 'https://lite-api.jup.ag/swap/v1',
+    },
+    discovery: {
+      anthropicApiKey: env.ANTHROPIC_API_KEY || undefined,
+      intervalHours: Number(env.DISCOVERY_INTERVAL_HOURS ?? '6'),
+      includeRecentDeploys: bool(env.DISCOVERY_RECENT_DEPLOYS, true),
     },
     logLevel: (env.LOG_LEVEL ?? 'info') as Config['logLevel'],
   };

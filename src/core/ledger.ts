@@ -33,6 +33,18 @@ export interface DaySummary {
   feesPaidLamports: bigint;
 }
 
+export interface DiscoveryRow {
+  id: number;
+  program_id: string;
+  program_name: string;
+  instruction: string;
+  status: string;
+  confidence: number;
+  summary: string;
+  candidate_json: string;
+  created_at: number;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS job_types (
   type TEXT PRIMARY KEY,
@@ -63,6 +75,26 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 CREATE INDEX IF NOT EXISTS attempts_day ON attempts(day);
 CREATE INDEX IF NOT EXISTS attempts_candidate ON attempts(candidate_id);
+CREATE TABLE IF NOT EXISTS discovery_programs (
+  program_id TEXT PRIMARY KEY,
+  name TEXT,
+  idl_hash TEXT,
+  scanned_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS discoveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  program_id TEXT NOT NULL,
+  program_name TEXT NOT NULL,
+  instruction TEXT NOT NULL,
+  status TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  summary TEXT NOT NULL,
+  candidate_json TEXT NOT NULL,
+  validation_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(program_id, instruction)
+);
 CREATE TABLE IF NOT EXISTS state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -150,6 +182,39 @@ export class Ledger {
       realizedLossLamports: big(row.realized_loss),
       feesPaidLamports: big(row.fees),
     };
+  }
+
+  /** Has this exact IDL version already been classified? */
+  programScanned(programId: string, idlHash: string): boolean {
+    const row = this.db.prepare('SELECT idl_hash FROM discovery_programs WHERE program_id = ?').get(programId) as { idl_hash: string } | undefined;
+    return row?.idl_hash === idlHash;
+  }
+
+  markProgramScanned(programId: string, name: string | null, idlHash: string | null): void {
+    this.db.prepare(`INSERT INTO discovery_programs (program_id, name, idl_hash, scanned_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(program_id) DO UPDATE SET name = excluded.name, idl_hash = excluded.idl_hash, scanned_at = excluded.scanned_at`)
+      .run(programId, name, idlHash, this.now());
+  }
+
+  /** Insert or update a discovered candidate; returns its id. */
+  upsertDiscovery(d: { programId: string; programName: string; instruction: string; status: string; confidence: number; summary: string; candidate: unknown; validation?: unknown }): number {
+    const json = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x));
+    const now = this.now();
+    this.db.prepare(`INSERT INTO discoveries (program_id, program_name, instruction, status, confidence, summary, candidate_json, validation_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(program_id, instruction) DO UPDATE SET status = excluded.status, confidence = excluded.confidence, summary = excluded.summary,
+        candidate_json = excluded.candidate_json, validation_json = excluded.validation_json, updated_at = excluded.updated_at`)
+      .run(d.programId, d.programName, d.instruction, d.status, d.confidence, d.summary, json(d.candidate), d.validation === undefined ? null : json(d.validation), now, now);
+    const row = this.db.prepare('SELECT id FROM discoveries WHERE program_id = ? AND instruction = ?').get(d.programId, d.instruction) as { id: number };
+    return row.id;
+  }
+
+  listDiscoveries(): DiscoveryRow[] {
+    return this.db.prepare('SELECT id, program_id, program_name, instruction, status, confidence, summary, candidate_json, created_at FROM discoveries ORDER BY updated_at DESC').all() as never;
+  }
+
+  getDiscovery(id: number): DiscoveryRow | undefined {
+    return this.db.prepare('SELECT id, program_id, program_name, instruction, status, confidence, summary, candidate_json, created_at FROM discoveries WHERE id = ?').get(id) as never;
   }
 
   getState(key: string): string | undefined {

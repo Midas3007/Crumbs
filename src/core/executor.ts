@@ -43,6 +43,14 @@ export class Executor {
     private jobs: Job[],
   ) {}
 
+  addJob(job: Job) {
+    if (!this.jobs.some(j => j.type === job.type)) this.jobs.push(job);
+  }
+
+  hasJob(type: string): boolean {
+    return this.jobs.some(j => j.type === type);
+  }
+
   setPrices(prices: PriceBook) {
     this.prices = prices;
   }

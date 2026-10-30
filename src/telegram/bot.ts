@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import type { Guardrails } from '../core/caps.js';
 import type { Ledger } from '../core/ledger.js';
 import { log } from '../core/logger.js';
@@ -66,13 +66,21 @@ export class TelegramNotifier implements Notifier {
     }
   }
 
+  async sendDocument(filename: string, content: string, caption: string): Promise<void> {
+    try {
+      await this.bot.api.sendDocument(this.chatId, new InputFile(Buffer.from(content, 'utf8'), filename), { caption: caption.slice(0, 1000) });
+    } catch (e) {
+      log.warn('telegram document failed', { error: String(e), filename });
+    }
+  }
+
   async requestApproval(req: ApprovalRequest): Promise<void> {
     const text = [
       '🆕 New job type wants to go live',
       `• ${req.jobType} (${req.protocol})`,
       `• ${req.description}`,
       `• Reward source: ${req.rewardSource}`,
-      req.evidence ? `\n${req.evidence}` : '',
+      req.evidence ? `\n${req.evidence.slice(0, 3000)}` : '',
       '\nIt runs in shadow mode until you approve.',
     ].join('\n');
     const kb = new InlineKeyboard().text('✅ Approve', `approve|${req.jobType}`).text('❌ Reject', `reject|${req.jobType}`);

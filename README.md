@@ -8,7 +8,7 @@ small wallet that finds these paid, permissionless chores, **proves each one is 
 first**, and only executes the ones that earn money after every fee. It runs inside hard spending limits that
 its owner controls from Telegram.
 
-> Status: Milestone 1 (executor core + first adapter, shadow mode). See [PROGRESS.md](PROGRESS.md).
+> Status: Milestones 1–2 (executor core, TukTuk adapter, discovery engine). See [PROGRESS.md](PROGRESS.md).
 
 ## Hard rules
 
@@ -35,6 +35,34 @@ The profit guard ([src/core/profitGuard.ts](src/core/profitGuard.ts)) is a pure 
 balance before and after the simulated transaction (the simulated balance already includes fees; we checked this on
 mainnet), values any token changes, and returns one verdict: `profitable`, `below_min_profit`,
 `over_job_spend_cap`, `simulation_failed`, `unknown_balance_effect` or `anomaly`. No AI is involved in this path.
+
+## Discovery: finding new paid chores
+
+```
+on-chain IDLs  ──►  signer screen  ──►  Claude classifies  ──►  replay real calls  ──►  Telegram
+(manual list +      (one signer, not     (permissionless?       with OUR wallet as      approve /
+ recent deploys)     an admin/owner)      pays caller? harms     caller, simulate        proposal /
+                                          users? trigger?)       (deterministic)         disclosure
+```
+
+1. **Programs:** [discovery/programs.json](discovery/programs.json) (add any program id) plus programs deployed or upgraded recently.
+2. **Signer screen** (no AI): keep instructions with exactly one signer that isn't constrained to be a specific account.
+3. **Claude** (`claude-sonnet-5-5`, structured output) reads each remaining instruction and returns a `JobCandidate`:
+   permissionless?, pays the caller?, could it harm users?, trigger, reward source, account hints, confidence, evidence.
+   Claude is never in the execution path; it only proposes.
+4. **Deterministic validation:** find recent successful mainnet calls of the instruction, swap in our wallet (and our token
+   accounts) as the caller, and simulate:
+   - **validated**: the replay is profitable now and nobody else's funds move → one-tap approval on Telegram, then it runs
+     autonomously as a replay job (still behind the profit guard and caps)
+   - **paid_not_replayable**: real callers get paid but each call uses up its work (one-shot tasks, liquidations) →
+     sent as an *adapter proposal*
+   - **anomaly**: the replay moves a third-party wallet's funds, or pays far more than recent callers earned → **never
+     executed**; a responsible-disclosure draft (what, how to reproduce on a fork, suggested fix) is saved to
+     `data/disclosures/` and sent to you
+5. An unchanged IDL is never re-classified, to save API credits.
+
+If the Claude API or Helius runs out of credits, you get one Telegram alert (repeated at most every 6 hours) and an
+"it's working again" message when it recovers.
 
 ## Adapters
 
@@ -87,6 +115,9 @@ Useful scripts:
 | `npm test` | Unit tests: profit guard, caps, kill switch, executor safety, adapter builds against recorded mainnet accounts |
 | `npm run survey` | Snapshot of the TukTuk market: queues, rewards, how much work is due |
 | `npm run simulate-task -- <task>` | Build and simulate one TukTuk task, print the program logs |
+| `npm run discover` | Run one discovery pass now (`-- <programId>` for specific programs, `--recent` for new deploys, `--no-ai` to skip Claude) |
+| `npm run validate-ix -- <program> <instruction>` | Replay recent real calls of one instruction with your wallet and report what it would earn |
+| `npm run export-key` | Print the agent's private key for an offline backup |
 | `npm run approve -- <type> [reject]` | Approve a job type without Telegram (no args lists them) |
 | `npm run record-fixtures` | Re-record the test fixtures from mainnet |
 

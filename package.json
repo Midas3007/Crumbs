@@ -13,7 +13,9 @@
     "survey": "tsx --disable-warning=ExperimentalWarning scripts/tuktuk-survey.ts",
     "simulate-task": "tsx --disable-warning=ExperimentalWarning scripts/simulate-task.ts",
     "new-wallet": "tsx scripts/new-wallet.ts",
-    "export-key": "tsx scripts/export-key.ts"
+    "export-key": "tsx scripts/export-key.ts",
+    "validate-ix": "tsx --disable-warning=ExperimentalWarning scripts/validate-ix.ts",
+    "discover": "tsx --disable-warning=ExperimentalWarning scripts/discover.ts"
   },
   "repository": {
     "type": "git",
@@ -25,6 +27,7 @@
   },
   "homepage": "https://github.com/Midas3007/Crumbs#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
     "@solana/web3.js": "^1.99.0",
     "grammy": "^1.46.0"
   },

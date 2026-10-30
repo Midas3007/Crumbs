@@ -1,5 +1,6 @@
 import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import { type Config, loadConfig } from '../src/config.js';
+import type { ApprovalRequest, Notifier } from '../src/core/notifier.js';
 import type { BuiltJob, SimOutcome } from '../src/core/types.js';
 
 export const AGENT = Keypair.generate();
@@ -38,4 +39,13 @@ export function sim(overrides: Partial<SimOutcome> = {}): SimOutcome {
     tokenDeltas: [],
     ...overrides,
   };
+}
+
+export class Recorder implements Notifier {
+  alerts: string[] = [];
+  approvals: ApprovalRequest[] = [];
+  documents: { filename: string; content: string }[] = [];
+  async alert(t: string) { this.alerts.push(t); }
+  async requestApproval(r: ApprovalRequest) { this.approvals.push(r); }
+  async sendDocument(filename: string, content: string) { this.documents.push({ filename, content }); }
 }

@@ -12,6 +12,8 @@ export interface ApprovalRequest {
 export interface Notifier {
   alert(text: string): Promise<void>;
   requestApproval(req: ApprovalRequest): Promise<void>;
+  /** Send a longer document (e.g. a disclosure draft). */
+  sendDocument(filename: string, content: string, caption: string): Promise<void>;
 }
 
 export class LogNotifier implements Notifier {
@@ -20,5 +22,8 @@ export class LogNotifier implements Notifier {
   }
   async requestApproval(req: ApprovalRequest) {
     log.warn('APPROVAL NEEDED — run `npm run approve -- <type>` or approve on Telegram', { ...req });
+  }
+  async sendDocument(filename: string, _content: string, caption: string) {
+    log.warn('DOCUMENT', { filename, caption });
   }
 }

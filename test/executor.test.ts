@@ -5,9 +5,8 @@ import type { Config } from '../src/config.js';
 import { Guardrails } from '../src/core/caps.js';
 import { Executor } from '../src/core/executor.js';
 import { Ledger } from '../src/core/ledger.js';
-import type { ApprovalRequest, Notifier } from '../src/core/notifier.js';
 import type { Candidate, Job } from '../src/core/types.js';
-import { AGENT, builtJob, testConfig } from './helpers.js';
+import { AGENT, builtJob, Recorder, testConfig } from './helpers.js';
 
 const BLOCKHASH = 'GHtXQBsoZHVnNFa9YevAzFr17DJjgHXk3ycTKD5xD3Zi';
 
@@ -40,12 +39,6 @@ class FakeJob implements Job {
   async build(_c: Candidate, _a: PublicKey) { return builtJob(this.reward); }
 }
 
-class Recorder implements Notifier {
-  alerts: string[] = [];
-  approvals: ApprovalRequest[] = [];
-  async alert(t: string) { this.alerts.push(t); }
-  async requestApproval(r: ApprovalRequest) { this.approvals.push(r); }
-}
 
 function setup(cfg: Config, delta: bigint, opts: Parameters<typeof fakeChain>[1] & { approve?: boolean; reward?: bigint } = {}) {
   const { conn, sent } = fakeChain(delta, opts);

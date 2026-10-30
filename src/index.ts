@@ -4,26 +4,33 @@ import { formatSol, loadConfig } from './config.js';
 import { Guardrails } from './core/caps.js';
 import { Executor } from './core/executor.js';
 import { BASE_FEE_PER_SIGNATURE } from './core/fees.js';
+import { CreditWatch, creditWatchingFetch } from './core/creditWatch.js';
 import { Ledger } from './core/ledger.js';
 import { log, setLogLevel } from './core/logger.js';
 import { LogNotifier, type Notifier } from './core/notifier.js';
 import { Sweeper } from './core/sweeper.js';
 import type { Job } from './core/types.js';
+import { ClaudeClassifier } from './discovery/classify.js';
+import { DiscoveryEngine, replaySpecFromLedger } from './discovery/engine.js';
+import { manualPrograms, recentlyDeployedPrograms } from './discovery/programs.js';
+import { ReplayJob } from './discovery/replayJob.js';
 import { TelegramNotifier } from './telegram/bot.js';
 
 async function main() {
   const cfg = loadConfig();
   setLogLevel(cfg.logLevel);
-  const conn = new Connection(cfg.rpcUrl, { commitment: 'confirmed' });
   const ledger = new Ledger(cfg.dbPath);
   const guard = new Guardrails(ledger, cfg.caps, cfg.envPaused);
+  let notifier: Notifier = new LogNotifier();
+  // Alerts when the Claude API or the RPC provider runs out of credits.
+  const credits = new CreditWatch(t => notifier.alert(t));
+  const conn = new Connection(cfg.rpcUrl, { commitment: 'confirmed', fetch: creditWatchingFetch(credits) });
 
   const jobs: Job[] = [
     new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports }),
   ];
 
   let summary = () => '';
-  let notifier: Notifier = new LogNotifier();
   let telegram: TelegramNotifier | undefined;
   if (cfg.telegram) {
     telegram = new TelegramNotifier(cfg.telegram.token, cfg.telegram.chatId, ledger, guard, () => summary());
@@ -50,6 +57,33 @@ async function main() {
       sweeper.maybeSweep().catch(e => log.warn('sweep failed', { error: String(e) }));
     }, 15 * 60_000));
   }
+  // Approved discoveries become live jobs (checked every minute, so a Telegram approval takes effect quickly).
+  const loadApprovedDiscoveries = () => {
+    for (const jt of ledger.listJobTypes()) {
+      const m = /^disc\.(\d+)$/.exec(jt.type);
+      if (!m || jt.status !== 'approved' || executor.hasJob(jt.type)) continue;
+      const spec = replaySpecFromLedger(ledger, Number(m[1]));
+      if (spec) {
+        executor.addJob(new ReplayJob(conn, spec));
+        log.info('discovered job is live', { type: jt.type, program: spec.candidate.programName, instruction: spec.candidate.instruction });
+      }
+    }
+  };
+  loadApprovedDiscoveries();
+  timers.push(setInterval(loadApprovedDiscoveries, 60_000));
+
+  if (cfg.discovery.anthropicApiKey) {
+    const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, new ClaudeClassifier(cfg.discovery.anthropicApiKey), { credits });
+    const discover = async () => {
+      const programs = [...manualPrograms(), ...(cfg.discovery.includeRecentDeploys ? await recentlyDeployedPrograms(conn) : [])];
+      await engine.run([...new Set(programs)]);
+    };
+    setTimeout(() => void discover().catch(e => log.warn('discovery failed', { error: String(e) })), 60_000);
+    timers.push(setInterval(() => void discover().catch(e => log.warn('discovery failed', { error: String(e) })), cfg.discovery.intervalHours * 3_600_000));
+  } else {
+    log.warn('ANTHROPIC_API_KEY not set: discovery is off');
+  }
+
   // Daily summary at 00:00 UTC.
   timers.push(setInterval(() => {
     const d = new Date();

@@ -1,0 +1,9 @@
+{
+  "_comment": "Programs Crumbs' discovery engine scans. Add any program id; it needs an on-chain Anchor IDL.",
+  "programs": [
+    { "id": "tuktukUrfhXT6ZT77QTU8RQtvgL967uRuVagWF57zVA", "name": "Helium TukTuk" },
+    { "id": "hcrLPFgFUY6sCUKzqLWxXx5bntDiDCrAZVcrXfx9AHu", "name": "Helium hpl-crons" },
+    { "id": "fanCjX4iwbn41FSuZSvoSdro2XjUKuWyZFbegnqtmTX", "name": "Helium wallet fanout" },
+    { "id": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD", "name": "Kamino Lend" }
+  ]
+}

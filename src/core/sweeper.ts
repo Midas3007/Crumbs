@@ -4,10 +4,9 @@ import {
 import { type Config, formatSol } from '../config.js';
 import { log } from './logger.js';
 
-export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-const ATA_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+import { ATA_PROGRAM_ID, associatedTokenAddress, TOKEN_PROGRAM_ID, USDC_MINT, WSOL_MINT } from './tokens.js';
+
+export { USDC_MINT, WSOL_MINT };
 
 /**
  * How much SOL to convert to USDC. Keeps `solFloat` for fees; skips tiny sweeps where the swap
@@ -16,10 +15,6 @@ const ATA_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8k
 export function sweepAmount(balance: bigint, solFloat: bigint, minSweep: bigint): bigint {
   const excess = balance - solFloat;
   return excess >= minSweep ? excess : 0n;
-}
-
-export function associatedTokenAddress(owner: PublicKey, mint: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()], ATA_PROGRAM_ID)[0];
 }
 
 /**
