@@ -2,6 +2,7 @@ import { Connection } from '@solana/web3.js';
 import { TuktukJob } from './adapters/tuktuk/adapter.js';
 import { formatSol, loadConfig } from './config.js';
 import { Guardrails } from './core/caps.js';
+import { ModeSwitch } from './core/mode.js';
 import { Executor } from './core/executor.js';
 import { BASE_FEE_PER_SIGNATURE } from './core/fees.js';
 import { CreditWatch, creditWatchingFetch } from './core/creditWatch.js';
@@ -24,6 +25,7 @@ async function main() {
   setLogLevel(cfg.logLevel);
   const ledger = new Ledger(cfg.dbPath);
   const guard = new Guardrails(ledger, cfg.caps, cfg.envPaused);
+  const modeSwitch = new ModeSwitch(cfg, ledger); // applies a /live or /shadow saved before a restart
   let notifier: Notifier = new LogNotifier();
   // Alerts when the Claude API or the RPC provider runs out of credits.
   const credits = new CreditWatch(t => notifier.alert(t));
@@ -40,7 +42,8 @@ async function main() {
   if (tgProblem) {
     log.error(`TELEGRAM_CHAT_ID looks wrong: ${tgProblem}. Run \`npm run telegram-setup\` to find the right one. Alerts go to the log until then.`);
   } else if (cfg.telegram) {
-    telegram = new TelegramNotifier(cfg.telegram.token, cfg.telegram.chatId, ledger, guard, () => summary(), () => share());
+    telegram = new TelegramNotifier(cfg.telegram.token, cfg.telegram.chatId, ledger, guard, () => summary(), () => share(),
+      { mode: modeSwitch, walletLamports: async () => BigInt(await conn.getBalance(cfg.agentPubkey, 'confirmed')) });
     notifier = telegram;
     telegram.start();
   } else {
@@ -60,10 +63,10 @@ async function main() {
   await executor.registerJobTypes();
 
   const timers: NodeJS.Timeout[] = [];
-  if (cfg.mode === 'live' && cfg.sweep.enabled && cfg.agentKeypair) {
+  if (cfg.sweep.enabled && cfg.agentKeypair) {
     const sweeper = new Sweeper(conn, cfg, cfg.agentKeypair, t => notifier.alert(t));
     timers.push(setInterval(() => {
-      if (guard.state().paused) return;
+      if (cfg.mode !== 'live' || guard.state().paused) return; // mode can change at runtime via /live, /shadow
       sweeper.maybeSweep().catch(e => log.warn('sweep failed', { error: String(e) }));
     }, 15 * 60_000));
   }

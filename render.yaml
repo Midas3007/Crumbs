@@ -1,0 +1,41 @@
+# Render Blueprint (paid route: background workers aren't on Render's free plan).
+# Free alternative: a small always-free VM, see DEPLOY.md.
+services:
+  - type: worker
+    name: crumbs
+    runtime: node
+    plan: starter
+    branch: claude/dreamy-wright-inux8n
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    disk:
+      # SQLite ledger (P&L history, approvals, mode) must survive restarts and deploys.
+      name: crumbs-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DB_PATH
+        value: /var/data/crumbs.db
+      # Upload keys/agent.json as a Secret File named agent.json in the Render dashboard.
+      - key: AGENT_KEYPAIR_PATH
+        value: /etc/secrets/agent.json
+      - key: CRUMBS_MODE
+        value: shadow
+      - key: HELIUS_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DASHBOARD_URL
+        value: https://crumbs-midart.vercel.app
+      - key: DASHBOARD_SECRET
+        sync: false
+      - key: DISCOVERY_RECENT_DEPLOYS
+        value: "false"
+      - key: DISCOVERY_INTERVAL_HOURS
+        value: "24"

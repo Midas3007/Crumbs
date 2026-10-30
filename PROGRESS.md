@@ -38,6 +38,14 @@
 - Fixed: tiny amounts (under 1e-6 SOL) were rounded to "0" in share text and the dashboard; every lamport is now kept.
 - 60 tests.
 
+## Done: going live and hosting
+
+- `/live` (go-live checklist plus a confirm button; it re-checks at the moment of the tap) and `/shadow` on Telegram. The mode is saved in the ledger, so it survives restarts. Blockers: no wallet key, balance below 0.002 SOL or above the wallet cap, the env kill switch. The owner waived the 24h shadow run.
+- `/jobs` now has Approve buttons for pending job types.
+- Heartbeat log every 5 minutes.
+- Hosting: `scripts/server-setup.sh` (any Debian/Ubuntu VM: Node 22, swap, build, systemd service with auto-restart) and DEPLOY.md (Google Cloud e2-micro free tier, Oracle, Render). `render.yaml` covers the paid Render route with a persistent disk.
+- 65 tests.
+
 ## Findings (Oct 30, mainnet)
 
 - **First real discovery pass (Claude, 4 seed programs, 43 instructions classified):** Claude picked out TukTuk `run_task_v0` (confidence 0.85) as the paid crank. Validation confirmed 3/3 recent callers earned 15,000 lamports and classed it *paid_not_replayable* (one-shot tasks), which matches what we found by hand in M1. Claude marked every hpl-crons and fanout instruction as not a job, and 2 Kamino instructions as worth validating.

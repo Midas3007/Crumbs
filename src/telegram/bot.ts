@@ -2,6 +2,7 @@ import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import type { Guardrails } from '../core/caps.js';
 import type { Ledger } from '../core/ledger.js';
 import { log } from '../core/logger.js';
+import { checklistText, type ModeSwitch } from '../core/mode.js';
 import type { ApprovalRequest, Notifier } from '../core/notifier.js';
 
 /**
@@ -16,12 +17,13 @@ export function telegramConfigProblem(token: string, chatId: string): string | u
 
 /**
  * Owner controls over Telegram. Only messages from TELEGRAM_CHAT_ID are obeyed.
- *   /pause /resume /status /jobs /share, and one-tap Approve / Reject buttons for new job types.
+ *   /live /shadow /pause /resume /status /jobs /share, and one-tap Approve / Reject buttons for job types.
  */
 export class TelegramNotifier implements Notifier {
   readonly bot: Bot;
 
-  constructor(token: string, private chatId: string, private ledger: Ledger, private guard: Guardrails, private summary: () => string, private share: () => string = summary) {
+  constructor(token: string, private chatId: string, private ledger: Ledger, private guard: Guardrails, private summary: () => string, private share: () => string = summary,
+    private controls?: { mode: ModeSwitch; walletLamports: () => Promise<bigint> }) {
     this.bot = new Bot(token);
     const owner = (id: number | undefined) => String(id) === this.chatId;
 
@@ -46,12 +48,38 @@ export class TelegramNotifier implements Notifier {
     });
     this.bot.command('jobs', async ctx => {
       if (!owner(ctx.chat?.id)) return;
-      const rows = this.ledger.listJobTypes().map(j => `${j.status === 'approved' ? '✅' : j.status === 'rejected' ? '❌' : '⏳'} ${j.type} — ${j.protocol}`);
-      await ctx.reply(rows.join('\n') || 'No job types yet.');
+      const types = this.ledger.listJobTypes();
+      const rows = types.map(j => `${j.status === 'approved' ? '✅' : j.status === 'rejected' ? '❌' : '⏳'} ${j.type} — ${j.protocol}`);
+      const kb = new InlineKeyboard();
+      for (const j of types.filter(t => t.status !== 'approved')) kb.text(`✅ Approve ${j.type}`, `approve|${j.type}`).row();
+      await ctx.reply(rows.join('\n') || 'No job types yet.', types.some(t => t.status !== 'approved') ? { reply_markup: kb } : {});
+    });
+    this.bot.command('live', async ctx => {
+      if (!owner(ctx.chat?.id) || !this.controls) return;
+      if (this.controls.mode.mode === 'live') return void (await ctx.reply('🟢 Already live. /shadow to stop sending.'));
+      const items = this.controls.mode.checklist(await this.controls.walletLamports(), this.guard.state());
+      const ready = this.controls.mode.canGoLive(items);
+      const text = `Go-live checklist\n\n${checklistText(items)}\n\n${ready ? 'Tap to start sending real transactions. /shadow switches back any time.' : 'Fix the ⛔ items first.'}`;
+      await ctx.reply(text, ready ? { reply_markup: new InlineKeyboard().text('🟢 Go live', 'mode|live').text('Cancel', 'mode|cancel') } : {});
+    });
+    this.bot.command('shadow', async ctx => {
+      if (!owner(ctx.chat?.id) || !this.controls) return;
+      this.controls.mode.setShadow();
+      await ctx.reply('◌ Shadow mode: simulating only, nothing will be sent. /live to go back.');
     });
     this.bot.on('callback_query:data', async ctx => {
       if (!owner(ctx.chat?.id ?? ctx.callbackQuery.message?.chat.id)) return ctx.answerCallbackQuery();
       const [action, type] = ctx.callbackQuery.data.split('|');
+      if (action === 'mode' && this.controls) {
+        await ctx.answerCallbackQuery();
+        await ctx.editMessageReplyMarkup();
+        if (type !== 'live') return void (await ctx.reply('Staying in shadow mode.'));
+        // Re-check at the moment of the tap: balances and pauses may have changed since /live.
+        const items = this.controls.mode.checklist(await this.controls.walletLamports(), this.guard.state());
+        if (!this.controls.mode.canGoLive(items)) return void (await ctx.reply(`Can't go live:\n${checklistText(items.filter(i => !i.ok && i.blocker))}`));
+        this.controls.mode.setLive();
+        return void (await ctx.reply('🟢 Live. Crumbs now sends transactions that simulate as profitable, inside your caps. /shadow or /pause to stop.'));
+      }
       if ((action === 'approve' || action === 'reject') && type) {
         this.ledger.setJobTypeStatus(type, action === 'approve' ? 'approved' : 'rejected');
         await ctx.answerCallbackQuery({ text: action === 'approve' ? 'Approved' : 'Rejected' });

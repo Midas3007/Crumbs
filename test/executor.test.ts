@@ -144,3 +144,16 @@ test('failed simulations are never sent', async () => {
   assert.equal(a.outcome, 'rejected');
   assert.equal(sent.length, 0);
 });
+
+test('mode switch at runtime: /live makes the next tick send, /shadow stops it', async () => {
+  const cfg = testConfig({ mode: 'shadow' });
+  const { ex, sent, ledger } = setup(cfg, 10_000n);
+  await ex.registerJobTypes();
+  ledger.setJobTypeStatus('fake.job', 'approved');
+  assert.equal((await ex.tick())[0].outcome, 'shadow');
+  cfg.mode = 'live';
+  assert.equal((await ex.tick())[0].outcome, 'landed');
+  cfg.mode = 'shadow';
+  assert.equal((await ex.tick())[0].outcome, 'shadow');
+  assert.equal(sent.length, 1);
+});

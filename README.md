@@ -119,8 +119,10 @@ address so simulations have a fee payer. Then:
 npm run dev
 ```
 
-Crumbs starts in **shadow mode** and messages you on Telegram. Telegram commands: `/status`, `/pause`,
-`/resume`, `/jobs`, plus Approve / Reject buttons for new job types.
+Crumbs starts in **shadow mode** and messages you on Telegram. Telegram commands: `/live` (go-live checklist and a
+confirm button), `/shadow`, `/status`, `/pause`, `/resume`, `/jobs` (with Approve buttons), `/share`.
+
+To run it 24/7 on a free server (or Render), see [DEPLOY.md](DEPLOY.md).
 
 Useful scripts:
 
