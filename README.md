@@ -8,7 +8,7 @@ small wallet that finds these paid, permissionless chores, **proves each one is 
 first**, and only executes the ones that earn money after every fee. It runs inside hard spending limits that
 its owner controls from Telegram.
 
-> Status: Milestones 1–2 (executor core, TukTuk adapter, discovery engine). See [PROGRESS.md](PROGRESS.md).
+> Status: Milestones 1–3 (executor core, TukTuk adapter, discovery engine, public dashboard). See [PROGRESS.md](PROGRESS.md).
 
 ## Hard rules
 
@@ -63,6 +63,16 @@ on-chain IDLs  ──►  signer screen  ──►  Claude classifies  ──►
 
 If the Claude API or Helius runs out of credits, you get one Telegram alert (repeated at most every 6 hours) and an
 "it's working again" message when it recovers.
+
+## Dashboard and alerts
+
+- **Public dashboard** ([dashboard/](dashboard/README.md), Next.js on Vercel): net P&L in SOL and USD, crumbs eaten, win
+  rate of sent transactions, fees paid, daily live vs shadow earnings chart, jobs by type, recent transactions linked to
+  Solscan, the wallet address, the discovery feed and a share card. The agent pushes a JSON snapshot every minute.
+- **USD prices** come from Pyth's SOL/USD account on-chain, read over the same RPC, so they're verifiable and need no extra service.
+  The same price lets the profit guard value USDC rewards.
+- **Telegram:** daily summary with the share line and the dashboard link, `/share`, approvals, cap and pause alerts,
+  anomaly disclosures, and credit alerts.
 
 ## Adapters
 

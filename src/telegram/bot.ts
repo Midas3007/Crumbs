@@ -16,12 +16,12 @@ export function telegramConfigProblem(token: string, chatId: string): string | u
 
 /**
  * Owner controls over Telegram. Only messages from TELEGRAM_CHAT_ID are obeyed.
- *   /pause /resume /status /jobs, and one-tap Approve / Reject buttons for new job types.
+ *   /pause /resume /status /jobs /share, and one-tap Approve / Reject buttons for new job types.
  */
 export class TelegramNotifier implements Notifier {
   readonly bot: Bot;
 
-  constructor(token: string, private chatId: string, private ledger: Ledger, private guard: Guardrails, private summary: () => string) {
+  constructor(token: string, private chatId: string, private ledger: Ledger, private guard: Guardrails, private summary: () => string, private share: () => string = summary) {
     this.bot = new Bot(token);
     const owner = (id: number | undefined) => String(id) === this.chatId;
 
@@ -39,6 +39,10 @@ export class TelegramNotifier implements Notifier {
       if (!owner(ctx.chat?.id)) return;
       const s = this.guard.state();
       await ctx.reply(`${this.summary()}\n\n${s.paused ? `⏸️ Paused: ${s.reason}` : '▶️ Running'}`);
+    });
+    this.bot.command('share', async ctx => {
+      if (!owner(ctx.chat?.id)) return;
+      await ctx.reply(this.share());
     });
     this.bot.command('jobs', async ctx => {
       if (!owner(ctx.chat?.id)) return;

@@ -28,6 +28,16 @@
 - Credit alerts: Claude out of credits (stops the discovery pass) and RPC quota or credit errors (watched on every RPC response), each throttled, with a recovery message.
 - 53 tests in total.
 
+## Done — Milestone 3 (dashboard and alerts)
+
+- Snapshot builder (`src/dashboard/snapshot.ts`): all-time totals, win rate, 30-day daily series, per-job-type earnings, recent sent and shadow attempts, discovery feed. Written to `data/snapshot.json` and pushed every minute to the dashboard (`DASHBOARD_URL`, `DASHBOARD_SECRET`).
+- SOL/USD from Pyth's on-chain PriceUpdateV2 account (owner and feed id checked); also feeds the profit guard's price book so USDC rewards are valued.
+- Dashboard app (`dashboard/`, Next.js 16, separate package so the phone never installs it): KPI tiles, daily live vs shadow bar chart (hand-rolled SVG, palette validated for colour blindness in light and dark, hover tooltips, table view), jobs by type, wallet with Solscan link, recent activity with tx links, discovery feed with status labels, share line with copy, a share card image (`/api/card`, also the social preview) and a public raw-data endpoint. The secret-protected POST stores the snapshot in a private Vercel Blob.
+- Telegram: `/share`; the daily summary includes the share line and the dashboard link.
+- Checked in light and dark mode and at phone width (no horizontal page overflow); production build passes.
+- Fixed: tiny amounts (under 1e-6 SOL) were rounded to "0" in share text and the dashboard; every lamport is now kept.
+- 60 tests.
+
 ## Findings (Oct 30, mainnet)
 
 - **First real discovery pass (Claude, 4 seed programs, 43 instructions classified):** Claude picked out TukTuk `run_task_v0` (confidence 0.85) as the paid crank. Validation confirmed 3/3 recent callers earned 15,000 lamports and classed it *paid_not_replayable* (one-shot tasks), which matches what we found by hand in M1. Claude marked every hpl-crons and fanout instruction as not a job, and 2 Kamino instructions as worth validating.
@@ -47,7 +57,7 @@
 - Pre-build TukTuk transactions ahead of the due time so only the final simulation runs at T (shave ~0.5s).
 - First full discovery pass with Claude over the seed programs (needs ANTHROPIC_API_KEY).
 - Kamino flash-loan liquidation adapter (option A).
-- Milestone 3: dashboard (Vercel, fed by a JSON snapshot), share card, SOL/USD via Pyth.
+- Deploy the dashboard on Vercel and set DASHBOARD_URL / DASHBOARD_SECRET on the agent.
 - Render deployment (`render.yaml`, a background worker with a persistent disk for SQLite).
 
 ## Known issues

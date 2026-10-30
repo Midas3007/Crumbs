@@ -235,6 +235,71 @@ export class Ledger {
     return this.db.prepare('SELECT id, program_id, program_name, instruction, status, confidence, summary, candidate_json, created_at FROM discoveries WHERE id = ?').get(id) as never;
   }
 
+  /** All-time totals for the dashboard. */
+  totals(): { attempts: number; landed: number; failed: number; realizedNetLamports: bigint; realizedLossLamports: bigint; feesPaidLamports: bigint; shadowWins: number; shadowNetLamports: bigint; anomalies: number; firstTs: number | null } {
+    const r = this.db.prepare(`SELECT
+        COUNT(*) AS attempts,
+        SUM(CASE WHEN outcome = 'landed' THEN 1 ELSE 0 END) AS landed,
+        SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN outcome IN ('landed','failed') THEN realized_net ELSE 0 END) AS realized_net,
+        SUM(CASE WHEN outcome IN ('landed','failed') AND realized_net < 0 THEN -realized_net ELSE 0 END) AS realized_loss,
+        SUM(CASE WHEN outcome IN ('landed','failed') THEN sim_cost ELSE 0 END) AS fees,
+        SUM(CASE WHEN outcome = 'shadow' AND verdict = 'profitable' THEN 1 ELSE 0 END) AS shadow_wins,
+        SUM(CASE WHEN outcome = 'shadow' AND verdict = 'profitable' THEN sim_net ELSE 0 END) AS shadow_net,
+        SUM(CASE WHEN outcome = 'anomaly' THEN 1 ELSE 0 END) AS anomalies,
+        MIN(ts) AS first_ts
+      FROM attempts`).get() as Record<string, number | bigint | null>;
+    return {
+      attempts: Number(r.attempts ?? 0), landed: Number(r.landed ?? 0), failed: Number(r.failed ?? 0),
+      realizedNetLamports: big(r.realized_net), realizedLossLamports: big(r.realized_loss), feesPaidLamports: big(r.fees),
+      shadowWins: Number(r.shadow_wins ?? 0), shadowNetLamports: big(r.shadow_net), anomalies: Number(r.anomalies ?? 0),
+      firstTs: r.first_ts === null ? null : Number(r.first_ts),
+    };
+  }
+
+  /** One row per UTC day for the last `days` days that had activity. */
+  dailySeries(days = 30): { day: string; realizedNetLamports: bigint; shadowNetLamports: bigint; landed: number; failed: number; shadowWins: number }[] {
+    const since = utcDay(this.now() - (days - 1) * 86_400_000);
+    const rows = this.db.prepare(`SELECT day,
+        SUM(CASE WHEN outcome IN ('landed','failed') THEN realized_net ELSE 0 END) AS realized_net,
+        SUM(CASE WHEN outcome = 'shadow' AND verdict = 'profitable' THEN sim_net ELSE 0 END) AS shadow_net,
+        SUM(CASE WHEN outcome = 'landed' THEN 1 ELSE 0 END) AS landed,
+        SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN outcome = 'shadow' AND verdict = 'profitable' THEN 1 ELSE 0 END) AS shadow_wins
+      FROM attempts WHERE day >= ? GROUP BY day ORDER BY day`).all(since) as Record<string, string | number | bigint | null>[];
+    return rows.map(r => ({
+      day: String(r.day), realizedNetLamports: big(r.realized_net), shadowNetLamports: big(r.shadow_net),
+      landed: Number(r.landed ?? 0), failed: Number(r.failed ?? 0), shadowWins: Number(r.shadow_wins ?? 0),
+    }));
+  }
+
+  /** Per job type: what it has earned live and in shadow. */
+  byJobType(): { type: string; protocol: string; status: string; landed: number; failed: number; realizedNetLamports: bigint; shadowWins: number; shadowNetLamports: bigint }[] {
+    const rows = this.db.prepare(`SELECT j.type, j.protocol, j.status,
+        SUM(CASE WHEN a.outcome = 'landed' THEN 1 ELSE 0 END) AS landed,
+        SUM(CASE WHEN a.outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN a.outcome IN ('landed','failed') THEN a.realized_net ELSE 0 END) AS realized_net,
+        SUM(CASE WHEN a.outcome = 'shadow' AND a.verdict = 'profitable' THEN 1 ELSE 0 END) AS shadow_wins,
+        SUM(CASE WHEN a.outcome = 'shadow' AND a.verdict = 'profitable' THEN a.sim_net ELSE 0 END) AS shadow_net
+      FROM job_types j LEFT JOIN attempts a ON a.job_type = j.type
+      GROUP BY j.type ORDER BY j.created_at`).all() as Record<string, string | number | bigint | null>[];
+    return rows.map(r => ({
+      type: String(r.type), protocol: String(r.protocol), status: String(r.status),
+      landed: Number(r.landed ?? 0), failed: Number(r.failed ?? 0), realizedNetLamports: big(r.realized_net),
+      shadowWins: Number(r.shadow_wins ?? 0), shadowNetLamports: big(r.shadow_net),
+    }));
+  }
+
+  /** Latest sent, shadow and anomaly attempts (rejections are noise for the dashboard). */
+  recentAttempts(limit = 25): { ts: number; jobType: string; outcome: string; netLamports: bigint; signature: string | null; reason: string | null }[] {
+    const rows = this.db.prepare(`SELECT ts, job_type, outcome, COALESCE(realized_net, sim_net) AS net, signature, reason
+      FROM attempts WHERE outcome IN ('landed','failed','sent','shadow','anomaly') ORDER BY ts DESC LIMIT ?`).all(limit) as Record<string, string | number | bigint | null>[];
+    return rows.map(r => ({
+      ts: Number(r.ts), jobType: String(r.job_type), outcome: String(r.outcome), netLamports: big(r.net),
+      signature: r.signature === null ? null : String(r.signature), reason: r.reason === null ? null : String(r.reason),
+    }));
+  }
+
   getState(key: string): string | undefined {
     const row = this.db.prepare('SELECT value FROM state WHERE key = ?').get(key) as { value: string } | undefined;
     return row?.value;

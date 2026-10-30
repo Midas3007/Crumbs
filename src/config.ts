@@ -47,6 +47,12 @@ export interface Config {
     /** Also scan programs deployed/upgraded recently, not just the manual list. */
     includeRecentDeploys: boolean;
   };
+  dashboard: {
+    /** Public dashboard base URL, e.g. https://crumbs.vercel.app. Snapshots are pushed there every minute. */
+    url?: string;
+    /** Shared secret; the same value goes in the dashboard's CRUMBS_PUSH_SECRET. */
+    secret?: string;
+  };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -126,6 +132,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       intervalHours: Number(env.DISCOVERY_INTERVAL_HOURS ?? '6'),
       includeRecentDeploys: bool(env.DISCOVERY_RECENT_DEPLOYS, true),
     },
+    dashboard: { url: env.DASHBOARD_URL || undefined, secret: env.DASHBOARD_SECRET || undefined },
     logLevel: (env.LOG_LEVEL ?? 'info') as Config['logLevel'],
   };
 }

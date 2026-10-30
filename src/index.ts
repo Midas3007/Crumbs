@@ -15,6 +15,9 @@ import { DiscoveryEngine, replaySpecFromLedger } from './discovery/engine.js';
 import { manualPrograms, recentlyDeployedPrograms } from './discovery/programs.js';
 import { ReplayJob } from './discovery/replayJob.js';
 import { TelegramNotifier, telegramConfigProblem } from './telegram/bot.js';
+import { priceBook } from './core/prices.js';
+import { Publisher } from './dashboard/publisher.js';
+import { shareText } from './dashboard/snapshot.js';
 
 async function main() {
   const cfg = loadConfig();
@@ -31,12 +34,13 @@ async function main() {
   ];
 
   let summary = () => '';
+  let share = () => '';
   let telegram: TelegramNotifier | undefined;
   const tgProblem = cfg.telegram && telegramConfigProblem(cfg.telegram.token, cfg.telegram.chatId);
   if (tgProblem) {
     log.error(`TELEGRAM_CHAT_ID looks wrong: ${tgProblem}. Run \`npm run telegram-setup\` to find the right one. Alerts go to the log until then.`);
   } else if (cfg.telegram) {
-    telegram = new TelegramNotifier(cfg.telegram.token, cfg.telegram.chatId, ledger, guard, () => summary());
+    telegram = new TelegramNotifier(cfg.telegram.token, cfg.telegram.chatId, ledger, guard, () => summary(), () => share());
     notifier = telegram;
     telegram.start();
   } else {
@@ -44,7 +48,10 @@ async function main() {
   }
 
   const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs);
-  summary = () => executor.summaryText();
+  const publisher = new Publisher(conn, cfg, ledger, guard);
+  const dashLink = cfg.dashboard.url ? `\n${cfg.dashboard.url}` : '';
+  summary = () => executor.summaryText() + (publisher.latest ? `\n\n${shareText(publisher.latest)}` : '') + dashLink;
+  share = () => (publisher.latest ? shareText(publisher.latest) : 'No data yet — give me a minute.') + dashLink;
 
   const balance = BigInt(await conn.getBalance(cfg.agentPubkey));
   log.info('starting', { mode: cfg.mode, wallet: cfg.agentPubkey.toBase58(), balance: formatSol(balance), paused: guard.state() });
@@ -86,6 +93,13 @@ async function main() {
   } else {
     log.warn('ANTHROPIC_API_KEY not set: discovery is off');
   }
+
+  // Dashboard snapshot every minute; the SOL price it reads also lets the profit guard value USDC rewards.
+  const publish = () => publisher.publish()
+    .then(() => { if (publisher.solUsd) executor.setPrices(priceBook(publisher.solUsd)); })
+    .catch(e => log.warn('snapshot failed', { error: String(e) }));
+  void publish();
+  timers.push(setInterval(publish, 60_000));
 
   // Daily summary at 00:00 UTC.
   timers.push(setInterval(() => {
