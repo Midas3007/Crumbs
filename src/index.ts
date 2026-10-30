@@ -4,6 +4,7 @@ import { formatSol, loadConfig } from './config.js';
 import { Guardrails } from './core/caps.js';
 import { ModeSwitch } from './core/mode.js';
 import { Executor } from './core/executor.js';
+import { JitoClient } from './core/jito.js';
 import { BASE_FEE_PER_SIGNATURE } from './core/fees.js';
 import { CreditWatch, creditWatchingFetch } from './core/creditWatch.js';
 import { Ledger } from './core/ledger.js';
@@ -50,7 +51,10 @@ async function main() {
     log.warn('TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set: alerts go to the log, approve with `npm run approve -- <type>`');
   }
 
-  const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs, { backgroundSettle: true });
+  const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs, {
+    backgroundSettle: true,
+    jito: cfg.jito.enabled ? { client: new JitoClient(cfg.jito.url), tipLamports: cfg.jito.tipLamports } : undefined,
+  });
   const publisher = new Publisher(conn, cfg, ledger, guard, 'data/snapshot.json', () => {
     const s = executor.stats;
     return { since: executor.startedAt, checks: s.checks, looked: s.candidates, profitable: s.shadow + s.sent, sent: s.sent,

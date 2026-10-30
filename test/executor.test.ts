@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { Connection, PublicKey } from '@solana/web3.js';
+import { type Connection, PublicKey, SystemProgram } from '@solana/web3.js';
+import type { JitoClient } from '../src/core/jito.js';
 import type { Config } from '../src/config.js';
 import { Guardrails } from '../src/core/caps.js';
 import { Executor } from '../src/core/executor.js';
@@ -188,3 +189,36 @@ test('speed: with background confirmation, a send returns immediately as "sent" 
   assert.equal(ledger.daySummary().landed, 1); // booked once the chain confirmed
   assert.match(ex.heartbeat(), /ms per job/);
 });
+
+function jitoChain(status: 'landed' | 'failed' | 'never') {
+  const bundles: unknown[] = [];
+  const { conn } = fakeChain(10_000n - 1_000n);
+  Object.assign(conn, {
+    getSignatureStatuses: async () => ({ value: [status === 'never' ? null : { confirmationStatus: 'confirmed', err: status === 'failed' ? { InstructionError: [0, 'x'] } : null }] }),
+    getBlockHeight: async () => 1_000, // past lastValidBlockHeight (100): an unseen bundle can never land
+  });
+  const client = {
+    tipInstruction: async (from: PublicKey, lamports: bigint) => SystemProgram.transfer({ fromPubkey: from, toPubkey: PublicKey.default, lamports: Number(lamports) }),
+    sendBundle: async (tx: unknown) => { bundles.push(tx); return 'bundle-id'; },
+  } as unknown as JitoClient;
+  return { conn, bundles, client };
+}
+
+for (const [status, outcome, net, landed] of [['landed', 'landed', 9_000n, 1], ['never', 'dropped', 0n, 0], ['failed', 'failed', 9_000n, 0]] as const) {
+  test(`jito: ${status === 'never' ? 'a lost race is dropped at no cost' : status === 'landed' ? 'a won race lands and pays (tip counted)' : 'a landed-but-failed tx is booked as a loss'}`, async () => {
+    const cfg = testConfig({ mode: 'live' });
+    const { conn, bundles, client } = jitoChain(status);
+    const ledger = new Ledger(':memory:');
+    const ex = new Executor(conn, cfg, ledger, new Guardrails(ledger, cfg.caps, false), new Recorder(), [new FakeJob()], { jito: { client, tipLamports: 1_000n }, jitoPollMs: 0 });
+    await ex.registerJobTypes();
+    ledger.setJobTypeStatus('fake.job', 'approved');
+    const [a] = await ex.tick();
+    assert.equal(bundles.length, 1);
+    assert.equal(a.outcome, outcome);
+    assert.equal(a.decision?.costLamports, 5_000n + 1_000n); // base fee + tip, no priority fee
+    const d = ledger.daySummary();
+    assert.equal(d.landed, landed);
+    if (status === 'never') assert.equal(d.realizedLossLamports, 0n);
+    else assert.equal(d.realizedNetLamports, net);
+  });
+}

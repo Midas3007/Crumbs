@@ -61,6 +61,13 @@
 - Helius rejects `getSignaturesForAddress` on the BPF upgradeable loader ("Address is not supported"), so recent-deploy discovery found nothing. It now reads every ProgramData account's last-deploy slot in one getProgramAccounts call on the public RPC (`DISCOVERY_LISTING_RPC_URL`, ~23.5k programs, ~6 MB), takes the 40 newest and maps each back to its program with a tiny exact-match lookup. A first version listed all ~80k program accounts (18 MB, hundreds of MB once parsed) and ran Render's 512 MB instance out of memory; the listing now parses the raw response by hand (peak +25 MB, 8 s), and `npm start` caps the heap at 384 MB.
 - Newer Anchor programs publish their IDL through the **Program Metadata program** (`ProgM6JC…`): 820 canonical "idl" accounts on mainnet versus few new legacy IDL accounts. Crumbs now reads both. The header layout was verified against real accounts (enums at bytes 83-86, length at 87; data inline, UTF-8, zlib, JSON), with a recorded fixture and a test. Of the 30 newest programs, 1 published an IDL (122 instructions, 25 passing the signer screen): most fresh deploys are bots or tests and are skipped at no Claude cost.
 
+## First live transaction and Jito (Oct 30)
+
+- First live send: a fresh TukTuk task at its due second (expected +9,856). Helium's crank turner landed first; ours landed after and failed, and the fee was still charged: **−5,144 lamports**. Racing ~2,800 fresh tasks/day like that could bleed ~0.014 SOL/day, under the 0.02 cap.
+- Fix: send through **Jito bundles** (`JITO_ENABLED`, default on). A bundle only lands if its transaction succeeds, so a lost race is dropped with no fee; we pay base fee + tip (`JITO_TIP_LAMPORTS`, default 1000, Jito's minimum) only on a win, and the tip replaces the priority fee. The tip is inside the transaction, so the profit guard counts it. Unseen bundles are settled as `dropped` (net 0) once their blockhash expires. Tip accounts come from `getTipAccounts`, with the Oct 30 list as fallback.
+- Market check (Jito tip floor, Oct 30): median landed tip ≈ 74k lamports, 25th percentile 10k, so a 1,000-lamport bundle will often be outbid. That's acceptable here: losing costs nothing.
+- Render now sets `DAILY_LOSS_CAP_SOL=0.005` as a backstop for the small wallet. 78 tests.
+
 ## Findings (Oct 30, mainnet)
 
 - **First real discovery pass (Claude, 4 seed programs, 43 instructions classified):** Claude picked out TukTuk `run_task_v0` (confidence 0.85) as the paid crank. Validation confirmed 3/3 recent callers earned 15,000 lamports and classed it *paid_not_replayable* (one-shot tasks), which matches what we found by hand in M1. Claude marked every hpl-crons and fanout instruction as not a job, and 2 Kamino instructions as worth validating.

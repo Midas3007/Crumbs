@@ -156,7 +156,7 @@ export class Ledger {
   }
 
   /** Fill in the on-chain result of a sent attempt. */
-  settleAttempt(id: number, outcome: 'landed' | 'failed', realizedNetLamports: bigint, reason?: string): void {
+  settleAttempt(id: number, outcome: 'landed' | 'failed' | 'dropped', realizedNetLamports: bigint, reason?: string): void {
     this.db.prepare('UPDATE attempts SET outcome = ?, realized_net = ?, reason = COALESCE(?, reason) WHERE id = ?')
       .run(outcome, realizedNetLamports, reason ?? null, id);
   }

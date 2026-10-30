@@ -43,3 +43,10 @@ services:
         value: "6"
       - key: DISCOVERY_DAILY_BUDGET_USD
         value: "0.25"
+      # Lost races go through Jito and cost nothing; this is a backstop sized for a ~0.025 SOL wallet.
+      - key: DAILY_LOSS_CAP_SOL
+        value: "0.005"
+      - key: JITO_ENABLED
+        value: "true"
+      - key: JITO_TIP_LAMPORTS
+        value: "1000"

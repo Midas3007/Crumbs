@@ -4,6 +4,8 @@ import type { Guardrails } from './caps.js';
 import { clampPriorityFee, estimatePriorityFee, BASE_FEE_PER_SIGNATURE } from './fees.js';
 import type { AttemptRecord, Ledger } from './ledger.js';
 import { log } from './logger.js';
+import { base58Encode } from './base58.js';
+import type { JitoClient } from './jito.js';
 import type { Notifier } from './notifier.js';
 import { evaluateProfit, type PriceBook } from './profitGuard.js';
 import { computeUnitLimit, measureUnits, simulateFinal } from './simulate.js';
@@ -25,12 +27,19 @@ const MAX_IN_FLIGHT = 3;
 export interface ExecutorOptions {
   /** Confirm sent transactions in the background so the next job isn't kept waiting (on in production). */
   backgroundSettle?: boolean;
+  /**
+   * Send through Jito bundles: a bundle only lands if the transaction succeeds, so a lost race costs
+   * nothing. The tip replaces the priority fee and is counted by the profit guard.
+   */
+  jito?: { client: JitoClient; tipLamports: bigint };
+  /** How often to check whether a bundle landed (tests use 0). */
+  jitoPollMs?: number;
 }
 
 export interface Attempt {
   candidate: Candidate;
   decision?: ProfitDecision;
-  outcome: 'gone' | 'error' | 'rejected' | 'anomaly' | 'shadow' | 'blocked' | 'sent' | 'landed' | 'failed';
+  outcome: 'gone' | 'error' | 'rejected' | 'anomaly' | 'shadow' | 'blocked' | 'sent' | 'landed' | 'failed' | 'dropped';
   signature?: string;
 }
 
@@ -191,8 +200,13 @@ export class Executor {
   }
 
   /** Simulate and evaluate one candidate. Exposed for tests and for discovery validation (M2). */
-  async estimateProfit(built: BuiltJob): Promise<{ tx?: VersionedTransaction; sim?: SimOutcome; decision: ProfitDecision }> {
+  async estimateProfit(built: BuiltJob): Promise<{ tx?: VersionedTransaction; sim?: SimOutcome; decision: ProfitDecision; built: BuiltJob }> {
     const payer = this.cfg.agentPubkey;
+    const jito = this.opts.jito;
+    if (jito && built.tipLamports === undefined) {
+      // The tip goes inside the transaction, so the simulation (and the profit guard) see its cost.
+      built = { ...built, instructions: [...built.instructions, await jito.client.tipInstruction(payer, jito.tipLamports)], tipLamports: jito.tipLamports };
+    }
     const { value: blockhash } = await this.latestBlockhash();
     const writable = built.instructions.flatMap(ix => ix.keys.filter(k => k.isWritable).map(k => k.pubkey));
     const feeKey = built.cuKey ?? built.instructions.at(-1)?.programId.toBase58() ?? 'default';
@@ -206,13 +220,13 @@ export class Executor {
       const measured = await measureUnits(this.conn, payer, built, blockhash);
       if (measured.err !== null) {
         const sim: SimOutcome = { err: measured.err, logs: measured.logs, unitsConsumed: measured.units, lamportsPre: 0n, lamportsPost: 0n, feeLamports: 0n, tipLamports: 0n, tokenDeltas: [] };
-        return { sim, decision: evaluateProfit(sim, built, this.cfg.caps, this.prices) };
+        return { sim, decision: evaluateProfit(sim, built, this.cfg.caps, this.prices), built };
       }
       units = measured.units;
     }
     const cuLimit = computeUnitLimit(units);
-    const estimate = await this.priorityFee(feeKey, writable);
-    const micro = clampPriorityFee(estimate, cuLimit, built.expectedRewardLamports, BASE_FEE_PER_SIGNATURE, this.cfg.caps.minProfitLamports);
+    // With Jito the tip buys inclusion, so no priority fee on top.
+    const micro = jito ? 0 : clampPriorityFee(await this.priorityFee(feeKey, writable), cuLimit, built.expectedRewardLamports, BASE_FEE_PER_SIGNATURE, this.cfg.caps.minProfitLamports);
     const { tx, outcome } = await simulateFinal(this.conn, payer, built, blockhash, cuLimit, micro);
     if (outcome.err === null && built.cuKey) {
       this.cuCache.set(built.cuKey, Math.max(outcome.unitsConsumed, this.cuCache.get(built.cuKey) ?? 0));
@@ -221,7 +235,7 @@ export class Executor {
       this.cuCache.delete(built.cuKey);
       return this.estimateProfit(built);
     }
-    return { tx, sim: outcome, decision: evaluateProfit(outcome, built, this.cfg.caps, this.prices) };
+    return { tx, sim: outcome, decision: evaluateProfit(outcome, built, this.cfg.caps, this.prices), built };
   }
 
   async process(job: Job, c: Candidate): Promise<Attempt> {
@@ -245,6 +259,7 @@ export class Executor {
       return { candidate: c, outcome: 'error' };
     }
     const { decision, sim, tx } = est;
+    built = est.built;
     const base = {
       jobType: job.type, candidateId: c.id, mode: this.cfg.mode, verdict: decision.verdict, reason: decision.reason,
       simNetLamports: decision.netLamports, simGrossLamports: decision.grossRewardLamports, simCostLamports: decision.costLamports,
@@ -295,7 +310,12 @@ export class Executor {
     const bh = await this.latestBlockhash();
     let signature: string;
     try {
-      signature = await this.conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
+      if (this.opts.jito) {
+        signature = base58Encode(tx.signatures[0]);
+        await this.opts.jito.client.sendBundle(tx);
+      } else {
+        signature = await this.conn.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 2 });
+      }
     } catch (e) {
       log.warn('send failed', { job: job.type, candidate: c.id, error: String(e) });
       return { candidate: c, decision, outcome: 'error' };
@@ -317,9 +337,19 @@ export class Executor {
   }
 
   /** Wait for the chain's verdict, book the real P&L and check the caps. */
-  private async settle(job: Job, built: BuiltJob, tx: VersionedTransaction, lastValidBlockHeight: number, signature: string, id: number): Promise<'landed' | 'failed'> {
+  private async settle(job: Job, built: BuiltJob, tx: VersionedTransaction, lastValidBlockHeight: number, signature: string, id: number): Promise<'landed' | 'failed' | 'dropped'> {
     let landedOk = false;
-    try {
+    if (this.opts.jito) {
+      const status = await this.awaitSignature(signature, lastValidBlockHeight);
+      if (status === 'dropped') {
+        // Jito didn't include the bundle (someone was faster, or a higher tip won): nothing was charged.
+        this.ledger.settleAttempt(id, 'dropped', 0n, 'bundle not included: lost race or outbid, no fee charged');
+        this.stats.gone++;
+        log.info('dropped (no fee)', { job: job.type, signature });
+        return 'dropped';
+      }
+      landedOk = status === 'landed';
+    } else try {
       const conf = await this.conn.confirmTransaction({ signature, blockhash: tx.message.recentBlockhash, lastValidBlockHeight }, 'confirmed');
       landedOk = conf.value.err === null;
     } catch (e) {
@@ -334,6 +364,18 @@ export class Executor {
     const breach = this.guard.checkAfterSend(realized.net, realized.fee);
     if (breach) await this.notifier.alert(`⏸️ Crumbs paused: ${breach}`);
     return outcome;
+  }
+
+  /** Poll for a signature until it confirms or its blockhash expires (then it can never land). */
+  private async awaitSignature(signature: string, lastValidBlockHeight: number): Promise<'landed' | 'failed' | 'dropped'> {
+    for (let i = 0; i < 45; i++) {
+      const { value } = await this.conn.getSignatureStatuses([signature]);
+      const s = value[0];
+      if (s && (s.confirmationStatus === 'confirmed' || s.confirmationStatus === 'finalized')) return s.err ? 'failed' : 'landed';
+      if (await this.conn.getBlockHeight('confirmed') > lastValidBlockHeight) return 'dropped';
+      await new Promise(r => setTimeout(r, this.opts.jitoPollMs ?? 2000));
+    }
+    return 'dropped';
   }
 
   /** What the tx actually did to the agent's balances, read back from the chain. */
