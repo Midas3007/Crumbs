@@ -12,7 +12,8 @@
     "approve": "tsx --disable-warning=ExperimentalWarning scripts/approve.ts",
     "survey": "tsx --disable-warning=ExperimentalWarning scripts/tuktuk-survey.ts",
     "simulate-task": "tsx --disable-warning=ExperimentalWarning scripts/simulate-task.ts",
-    "new-wallet": "tsx scripts/new-wallet.ts"
+    "new-wallet": "tsx scripts/new-wallet.ts",
+    "export-key": "tsx scripts/export-key.ts"
   },
   "repository": {
     "type": "git",
