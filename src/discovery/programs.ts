@@ -14,30 +14,52 @@ export function manualPrograms(file = 'discovery/programs.json', env = process.e
 /**
  * Programs deployed or upgraded most recently.
  * Every upgradeable program has a ProgramData account (loader tag 3) holding the slot of its last
- * deploy; one getProgramAccounts call reads just those slots (~6 MB for ~24k programs), we take the
- * newest, then map each ProgramData address back to its program (tag 2 accounts point at it).
+ * deploy. One getProgramAccounts call reads just those slots (~23.5k accounts, ~6 MB), parsed by hand
+ * to keep memory low; then each of the newest is mapped to its program with a tiny exact-match lookup.
+ * (Listing all ~80k program accounts instead ran a 512 MB server out of memory.)
  * Helius rejects history lookups on the loader address, so this uses `listingConn` (the public RPC by default).
  */
 export async function recentlyDeployedPrograms(listingConn: Connection, newest = 40): Promise<string[]> {
-  const tag = (n: number) => Buffer.from([n, 0, 0, 0]).toString('base64');
   try {
-    const programData = await listingConn.getProgramAccounts(BPF_UPGRADEABLE_LOADER, {
-      filters: [{ memcmp: { offset: 0, bytes: tag(3), encoding: 'base64' } }],
-      dataSlice: { offset: 4, length: 8 },
+    const res = await fetch(listingConn.rpcEndpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'getProgramAccounts',
+        params: [BPF_UPGRADEABLE_LOADER.toBase58(), {
+          encoding: 'base64',
+          dataSlice: { offset: 4, length: 8 },
+          filters: [{ memcmp: { offset: 0, bytes: Buffer.from([3, 0, 0, 0]).toString('base64'), encoding: 'base64' } }],
+        }],
+      }),
+      signal: AbortSignal.timeout(120_000),
     });
-    const latest = programData
-      .filter(a => a.account.data.length === 8)
-      .map(a => ({ address: a.pubkey.toBase58(), slot: a.account.data.readBigUInt64LE(0) }))
-      .sort((a, b) => (b.slot > a.slot ? 1 : b.slot < a.slot ? -1 : 0))
-      .slice(0, newest);
-    const wanted = new Set(latest.map(l => l.address));
-    // Program accounts: tag 2 followed by their ProgramData address (36 bytes in total).
-    const programs = await listingConn.getProgramAccounts(BPF_UPGRADEABLE_LOADER, {
-      filters: [{ dataSize: 36 }, { memcmp: { offset: 0, bytes: tag(2), encoding: 'base64' } }],
-      dataSlice: { offset: 4, length: 32 },
-    });
-    const byProgramData = new Map(programs.map(p => [new PublicKey(p.account.data).toBase58(), p.pubkey.toBase58()]));
-    return latest.map(l => byProgramData.get(l.address)).filter((p): p is string => Boolean(p && wanted));
+    const body = await res.json() as { result?: { pubkey: string; account: { data: [string, string] } }[]; error?: { message: string } };
+    if (!body.result) throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+    // Keep the newest `newest` by slot without building objects for all ~23k.
+    const latest: { address: string; slot: bigint }[] = [];
+    for (const a of body.result) {
+      const raw = Buffer.from(a.account.data[0], 'base64');
+      if (raw.length !== 8) continue;
+      const slot = raw.readBigUInt64LE(0);
+      if (latest.length < newest || slot > latest[latest.length - 1].slot) {
+        latest.push({ address: a.pubkey, slot });
+        latest.sort((x, y) => (y.slot > x.slot ? 1 : y.slot < x.slot ? -1 : 0));
+        if (latest.length > newest) latest.pop();
+      }
+    }
+    body.result = undefined;
+
+    const out: string[] = [];
+    for (const { address } of latest) {
+      // The program account is 36 bytes: tag 2, then its ProgramData address.
+      const programs = await listingConn.getProgramAccounts(BPF_UPGRADEABLE_LOADER, {
+        filters: [{ dataSize: 36 }, { memcmp: { offset: 4, bytes: address } }],
+        dataSlice: { offset: 0, length: 0 },
+      });
+      if (programs[0]) out.push(programs[0].pubkey.toBase58());
+    }
+    return out;
   } catch (e) {
     log.warn('could not list recent deploys', { error: String(e) });
     return [];

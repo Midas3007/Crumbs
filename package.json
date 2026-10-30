@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Autonomous Solana agent that earns the small, permissionless keeper rewards big bots ignore — profit proven by simulation before every action.",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning dist/src/index.js",
+    "start": "node --disable-warning=ExperimentalWarning --max-old-space-size=384 dist/src/index.js",
     "dev": "tsx --disable-warning=ExperimentalWarning src/index.ts",
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
