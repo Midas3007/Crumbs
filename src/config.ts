@@ -76,8 +76,43 @@ function loadKeypair(env: NodeJS.ProcessEnv): Keypair | undefined {
       ? readFileSync(env.AGENT_KEYPAIR_PATH, 'utf8')
       : undefined);
   if (!raw) return undefined;
-  const bytes = JSON.parse(raw) as number[];
-  return Keypair.fromSecretKey(Uint8Array.from(bytes));
+  return parseSecretKey(raw);
+}
+
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function base58Decode(s: string): Uint8Array {
+  let n = 0n;
+  for (const ch of s) {
+    const v = B58.indexOf(ch);
+    if (v < 0) throw new Error('not base58');
+    n = n * 58n + BigInt(v);
+  }
+  const bytes: number[] = [];
+  while (n > 0n) { bytes.unshift(Number(n % 256n)); n /= 256n; }
+  for (const ch of s) { if (ch !== '1') break; bytes.unshift(0); }
+  return Uint8Array.from(bytes);
+}
+
+/**
+ * The wallet key, however it was pasted: the JSON array from keys/agent.json (with or without its
+ * [ ] brackets, line breaks or spaces), or the base58 string `npm run export-key` prints.
+ * Never echoes the key in an error.
+ */
+export function parseSecretKey(raw: string): Keypair {
+  const text = raw.trim();
+  let bytes: Uint8Array | undefined;
+  if (/^\[?[\d,\s]+\]?$/.test(text)) {
+    const nums = text.replace(/[\[\]\s]/g, '').split(',').filter(Boolean).map(Number);
+    if (nums.every(n => Number.isInteger(n) && n >= 0 && n <= 255)) bytes = Uint8Array.from(nums);
+  } else if (/^[1-9A-HJ-NP-Za-km-z]+$/.test(text)) {
+    bytes = base58Decode(text);
+  }
+  if (!bytes || bytes.length !== 64) {
+    throw new Error(`The wallet key isn't in a format Crumbs can read (got ${bytes?.length ?? 0} bytes, need 64). `
+      + 'Paste the whole contents of keys/agent.json, from [ to ], or the private key from `npm run export-key`.');
+  }
+  return Keypair.fromSecretKey(bytes);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
