@@ -112,6 +112,19 @@ export function recordCall(tx: VersionedTransactionResponse, signature: string, 
   };
 }
 
+/**
+ * getTransaction, but a transaction we can't decode (e.g. Solana's newer transaction version 1, which
+ * web3.js v1 rejects) is skipped instead of failing the whole scan.
+ */
+export async function fetchTxOrSkip(conn: Connection, signature: string): Promise<VersionedTransactionResponse | null> {
+  try {
+    return await conn.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+  } catch (e) {
+    if (/version|not supported/i.test(String(e))) return null;
+    throw e;
+  }
+}
+
 /** Recent successful calls of an instruction, newest first. */
 export async function findRecentCalls(
   conn: Connection, program: PublicKey, discriminator: Buffer, callerIndexInIx: number,
@@ -122,7 +135,7 @@ export async function findRecentCalls(
   for (const s of sigs) {
     if (s.err) continue;
     if (opts.delayMs) await new Promise(r => setTimeout(r, opts.delayMs));
-    const tx = await conn.getTransaction(s.signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+    const tx = await fetchTxOrSkip(conn, s.signature);
     if (!tx) continue;
     const call = recordCall(tx, s.signature, program, discriminator, callerIndexInIx);
     if (call) out.push(call);

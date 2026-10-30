@@ -30,6 +30,10 @@
 
 ## Findings (Oct 30, mainnet)
 
+- **First real discovery pass (Claude, 4 seed programs, 43 instructions classified):** Claude picked out TukTuk `run_task_v0` (confidence 0.85) as the paid crank. Validation confirmed 3/3 recent callers earned 15,000 lamports and classed it *paid_not_replayable* (one-shot tasks), which matches what we found by hand in M1. Claude marked every hpl-crons and fanout instruction as not a job, and 2 Kamino instructions as worth validating.
+- That pass hit two bugs, now fixed: (1) ~40% of recent Kamino transactions use Solana's new transaction version 1, which web3.js v1 can't decode, and that aborted the program's scan. Such transactions are now skipped. (2) A program whose scan failed would have been re-classified, paying Claude again. Classifications are now cached per IDL version.
+- Telegram 403 "bots can't send messages to bots": TELEGRAM_CHAT_ID was set to the bot's own id. Startup now detects this, and `npm run telegram-setup` finds the right id.
+
 - **Drift / Velocity:** no adapter. Drift was exploited on Apr 1, 2026 and froze; its successor Velocity uses the same program, which has had zero fills in 54 days (only ~1,000 transactions, mostly failed). Revisit if Velocity opens to the public.
 - `validate-ix` on TukTuk `run_task_v0`: 3/3 recent callers earned 15,000 lamports gross, but replays fail because each task is consumed when run. This is correctly classed as *paid_not_replayable*: it needs a dedicated adapter, which is the TukTuk adapter we already have.
 

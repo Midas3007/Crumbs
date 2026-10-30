@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { type Connection, PublicKey } from '@solana/web3.js';
 import { log } from '../core/logger.js';
+import { fetchTxOrSkip } from './validate.js';
 
 const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
@@ -21,7 +22,7 @@ export async function recentlyDeployedPrograms(conn: Connection, scan = 40): Pro
     const sigs = await conn.getSignaturesForAddress(BPF_UPGRADEABLE_LOADER, { limit: scan });
     for (const s of sigs) {
       if (s.err) continue;
-      const tx = await conn.getTransaction(s.signature, { maxSupportedTransactionVersion: 0 });
+      const tx = await fetchTxOrSkip(conn, s.signature);
       if (!tx?.meta) continue;
       const msg = tx.transaction.message;
       const keys = msg.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses });

@@ -54,3 +54,11 @@ test('RPC: 401/402/403 alert; the response is still returned to web3.js intact',
   await new Promise(r => setImmediate(r));
   assert.match(sent[1], /working again/);
 });
+
+test('Telegram setup check: the bot\'s own id is caught, a real chat id passes', async () => {
+  const { telegramConfigProblem } = await import('../src/telegram/bot.js');
+  const token = '7712345678:AAH-example-token';
+  assert.match(telegramConfigProblem(token, '7712345678') ?? '', /bot's own id/);
+  assert.match(telegramConfigProblem(token, '@me') ?? '', /must be a number/);
+  assert.equal(telegramConfigProblem(token, '5123456789'), undefined);
+});

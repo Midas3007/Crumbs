@@ -84,8 +84,11 @@ export class DiscoveryEngine {
     report.programsScanned++;
 
     const screened = screenProgram(idl.instructions);
-    const candidates = await this.classifier.classify(idl, screened);
-    if (screened.length) await this.opts.credits?.recovered('claude');
+    // Reuse a classification we already paid for (e.g. validation failed last time); otherwise ask Claude once and keep the answer.
+    const cached = this.ledger.getClassification(programId, idl.hash) as JobCandidate[] | undefined;
+    const candidates = cached ?? await this.classifier.classify(idl, screened);
+    if (!cached) this.ledger.saveClassification(programId, idl.hash, candidates);
+    if (screened.length && !cached) await this.opts.credits?.recovered('claude');
     report.classified += candidates.length;
     log.info('classified', { program: idl.name, screened: screened.length, worth: candidates.filter(c => worthValidating(c)).length });
 

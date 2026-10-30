@@ -15,7 +15,8 @@
     "new-wallet": "tsx scripts/new-wallet.ts",
     "export-key": "tsx scripts/export-key.ts",
     "validate-ix": "tsx --disable-warning=ExperimentalWarning scripts/validate-ix.ts",
-    "discover": "tsx --disable-warning=ExperimentalWarning scripts/discover.ts"
+    "discover": "tsx --disable-warning=ExperimentalWarning scripts/discover.ts",
+    "telegram-setup": "tsx --disable-warning=ExperimentalWarning scripts/telegram-setup.ts"
   },
   "repository": {
     "type": "git",

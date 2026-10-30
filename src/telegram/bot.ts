@@ -5,6 +5,16 @@ import { log } from '../core/logger.js';
 import type { ApprovalRequest, Notifier } from '../core/notifier.js';
 
 /**
+ * Common setup mistake: TELEGRAM_CHAT_ID set to the bot's own id (the number before ':' in the token).
+ * Telegram then answers 403 "bots can't send messages to bots".
+ */
+export function telegramConfigProblem(token: string, chatId: string): string | undefined {
+  if (!/^-?\d+$/.test(chatId.trim())) return 'it must be a number (your chat id), not a username or link';
+  if (chatId.trim() === token.split(':')[0]) return "that's the bot's own id (the first part of the token), not your chat id";
+  return undefined;
+}
+
+/**
  * Owner controls over Telegram. Only messages from TELEGRAM_CHAT_ID are obeyed.
  *   /pause /resume /status /jobs, and one-tap Approve / Reject buttons for new job types.
  */

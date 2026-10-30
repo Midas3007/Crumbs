@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS discovery_programs (
   idl_hash TEXT,
   scanned_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS classifications (
+  program_id TEXT NOT NULL,
+  idl_hash TEXT NOT NULL,
+  candidates_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (program_id, idl_hash)
+);
 CREATE TABLE IF NOT EXISTS discoveries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   program_id TEXT NOT NULL,
@@ -194,6 +201,17 @@ export class Ledger {
     this.db.prepare(`INSERT INTO discovery_programs (program_id, name, idl_hash, scanned_at) VALUES (?, ?, ?, ?)
       ON CONFLICT(program_id) DO UPDATE SET name = excluded.name, idl_hash = excluded.idl_hash, scanned_at = excluded.scanned_at`)
       .run(programId, name, idlHash, this.now());
+  }
+
+  /** Claude's answer for this exact IDL version, if we already paid for it. */
+  getClassification(programId: string, idlHash: string): unknown[] | undefined {
+    const row = this.db.prepare('SELECT candidates_json FROM classifications WHERE program_id = ? AND idl_hash = ?').get(programId, idlHash) as { candidates_json: string } | undefined;
+    return row ? (JSON.parse(row.candidates_json) as unknown[]) : undefined;
+  }
+
+  saveClassification(programId: string, idlHash: string, candidates: unknown[]): void {
+    this.db.prepare('INSERT OR REPLACE INTO classifications (program_id, idl_hash, candidates_json, created_at) VALUES (?, ?, ?, ?)')
+      .run(programId, idlHash, JSON.stringify(candidates), this.now());
   }
 
   /** Insert or update a discovered candidate; returns its id. */

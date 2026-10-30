@@ -98,7 +98,7 @@ cp .env.example .env
 npm run new-wallet
 ```
 
-Fill in `.env`: `HELIUS_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Send about 0.01 SOL to the wallet
+Fill in `.env`: `HELIUS_API_KEY`, `TELEGRAM_BOT_TOKEN`, then message your bot and run `npm run telegram-setup` to get `TELEGRAM_CHAT_ID`. Send about 0.01 SOL to the wallet
 address so simulations have a fee payer. Then:
 
 ```bash
@@ -117,6 +117,7 @@ Useful scripts:
 | `npm run simulate-task -- <task>` | Build and simulate one TukTuk task, print the program logs |
 | `npm run discover` | Run one discovery pass now (`-- <programId>` for specific programs, `--recent` for new deploys, `--no-ai` to skip Claude) |
 | `npm run validate-ix -- <program> <instruction>` | Replay recent real calls of one instruction with your wallet and report what it would earn |
+| `npm run telegram-setup` | Find your Telegram chat id and send a test message (stop Crumbs first, message your bot, then run it) |
 | `npm run export-key` | Print the agent's private key for an offline backup |
 | `npm run approve -- <type> [reject]` | Approve a job type without Telegram (no args lists them) |
 | `npm run record-fixtures` | Re-record the test fixtures from mainnet |

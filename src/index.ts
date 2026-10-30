@@ -14,7 +14,7 @@ import { ClaudeClassifier } from './discovery/classify.js';
 import { DiscoveryEngine, replaySpecFromLedger } from './discovery/engine.js';
 import { manualPrograms, recentlyDeployedPrograms } from './discovery/programs.js';
 import { ReplayJob } from './discovery/replayJob.js';
-import { TelegramNotifier } from './telegram/bot.js';
+import { TelegramNotifier, telegramConfigProblem } from './telegram/bot.js';
 
 async function main() {
   const cfg = loadConfig();
@@ -32,7 +32,10 @@ async function main() {
 
   let summary = () => '';
   let telegram: TelegramNotifier | undefined;
-  if (cfg.telegram) {
+  const tgProblem = cfg.telegram && telegramConfigProblem(cfg.telegram.token, cfg.telegram.chatId);
+  if (tgProblem) {
+    log.error(`TELEGRAM_CHAT_ID looks wrong: ${tgProblem}. Run \`npm run telegram-setup\` to find the right one. Alerts go to the log until then.`);
+  } else if (cfg.telegram) {
     telegram = new TelegramNotifier(cfg.telegram.token, cfg.telegram.chatId, ledger, guard, () => summary());
     notifier = telegram;
     telegram.start();

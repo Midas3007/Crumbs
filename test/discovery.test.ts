@@ -13,7 +13,7 @@ import { draftDisclosure } from '../src/discovery/disclosure.js';
 import { DiscoveryEngine, replaySpecFromLedger } from '../src/discovery/engine.js';
 import { legacyDiscriminator, parseIdl } from '../src/discovery/idl.js';
 import { screenInstruction, screenProgram } from '../src/discovery/prefilter.js';
-import { rewriteForAgent, thirdPartyMovements, type RecordedCall, type ValidationResult } from '../src/discovery/validate.js';
+import { fetchTxOrSkip, rewriteForAgent, thirdPartyMovements, type RecordedCall, type ValidationResult } from '../src/discovery/validate.js';
 import { AGENT, Recorder, testConfig } from './helpers.js';
 
 const PROGRAM = 'tuktukUrfhXT6ZT77QTU8RQtvgL967uRuVagWF57zVA';
@@ -229,4 +229,27 @@ test('engine: Claude out of credits stops the pass and alerts once', async () =>
   assert.match(r.skipped[0].why, /out of credits/);
   assert.equal(sent.length, 1);
   assert.match(sent[0], /Claude API credits/);
+});
+
+test('engine: if validation fails mid-scan, the next run reuses the paid-for classification', async () => {
+  const ledger = new Ledger(':memory:');
+  const classifier = new StubClassifier([candidate()]);
+  let fail = true;
+  const engine = new DiscoveryEngine({} as Connection, testConfig(), ledger, new Recorder(), classifier, {
+    fetch: async () => parseIdl(PROGRAM, NEW_IDL),
+    validate: async () => { if (fail) throw new Error('rpc hiccup'); return validation('validated'); },
+  });
+  const first = await engine.run([PROGRAM]);
+  assert.match(first.skipped[0].why, /rpc hiccup/);
+  fail = false;
+  const second = await engine.run([PROGRAM]);
+  assert.equal(second.validated.length, 1);
+  assert.equal(classifier.calls, 1); // Claude was asked once, not twice
+});
+
+test('fetchTxOrSkip: an undecodable (version 1) transaction is skipped, other errors still surface', async () => {
+  const v1 = { getTransaction: async () => { throw new Error('failed to get transaction: Transaction version (1) is not supported by the requesting client'); } } as unknown as Connection;
+  assert.equal(await fetchTxOrSkip(v1, 'sig'), null);
+  const down = { getTransaction: async () => { throw new Error('fetch failed'); } } as unknown as Connection;
+  await assert.rejects(fetchTxOrSkip(down, 'sig'), /fetch failed/);
 });
