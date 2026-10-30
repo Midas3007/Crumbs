@@ -10,6 +10,8 @@ small wallet that finds these paid, permissionless chores, **proves each one is 
 first**, and only executes the ones that earn money after every fee. It runs inside hard spending limits that
 its owner controls from Telegram.
 
+> **Live dashboard: [crumbs-midart.vercel.app](https://crumbs-midart.vercel.app)** · wallet [G3ZwBYGo…FRxeKbV](https://solscan.io/account/G3ZwBYGoMXGgt4wunRjWSNkyB3J9sgUPxNq8CFRxeKbV)
+>
 > Status: Milestones 1–3 (executor core, TukTuk adapter, discovery engine, public dashboard). See [PROGRESS.md](PROGRESS.md).
 
 ## Hard rules
