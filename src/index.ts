@@ -90,9 +90,11 @@ async function main() {
   timers.push(setInterval(loadApprovedDiscoveries, 60_000));
 
   if (cfg.discovery.anthropicApiKey) {
+    // Public RPC for the big deploy listing; no automatic 429 retries so a busy RPC doesn't stall discovery.
+    const listingConn = new Connection(cfg.discovery.listingRpcUrl, { disableRetryOnRateLimit: true });
     const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, new ClaudeClassifier(cfg.discovery.anthropicApiKey), { credits, dailyBudgetUsd: cfg.discovery.dailyBudgetUsd });
     const discover = async () => {
-      const programs = [...manualPrograms(), ...(cfg.discovery.includeRecentDeploys ? await recentlyDeployedPrograms(new Connection(cfg.discovery.listingRpcUrl)) : [])];
+      const programs = [...manualPrograms(), ...(cfg.discovery.includeRecentDeploys ? await recentlyDeployedPrograms(listingConn, 40, [conn, listingConn]) : [])];
       await engine.run([...new Set(programs)]);
     };
     setTimeout(() => void discover().catch(e => log.warn('discovery failed', { error: String(e) })), 60_000);

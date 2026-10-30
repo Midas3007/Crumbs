@@ -25,7 +25,7 @@ const notifier = cfg.telegram
   : new LogNotifier();
 
 const explicit = args.filter(a => !a.startsWith('--'));
-const programs = explicit.length ? explicit : [...manualPrograms(), ...(args.includes('--recent') ? await recentlyDeployedPrograms(new Connection(cfg.discovery.listingRpcUrl)) : [])];
+const programs = explicit.length ? explicit : [...manualPrograms(), ...(args.includes('--recent') ? await recentlyDeployedPrograms(new Connection(cfg.discovery.listingRpcUrl, { disableRetryOnRateLimit: true }), 40, [conn, new Connection(cfg.discovery.listingRpcUrl)]) : [])];
 const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, noAi ? new HeuristicClassifier() : new ClaudeClassifier(cfg.discovery.anthropicApiKey), { force: args.includes('--force') || noAi, credits: new CreditWatch(t => notifier.alert(t)), dailyBudgetUsd: cfg.discovery.dailyBudgetUsd });
 const r = await engine.run([...new Set(programs)]);
 

@@ -11,6 +11,22 @@ export function manualPrograms(file = 'discovery/programs.json', env = process.e
   return [...new Set([...fromFile, ...fromEnv])];
 }
 
+/** The program whose 36-byte account (tag 2 + ProgramData address) points at this ProgramData account. */
+async function programForProgramData(programData: string, conns: Connection[]): Promise<string | undefined> {
+  for (const conn of conns) {
+    try {
+      const programs = await conn.getProgramAccounts(BPF_UPGRADEABLE_LOADER, {
+        filters: [{ dataSize: 36 }, { memcmp: { offset: 4, bytes: programData } }],
+        dataSlice: { offset: 0, length: 0 },
+      });
+      return programs[0]?.pubkey.toBase58();
+    } catch {
+      /* rate-limited or unsupported here: try the next connection */
+    }
+  }
+  return undefined;
+}
+
 /**
  * Programs deployed or upgraded most recently.
  * Every upgradeable program has a ProgramData account (loader tag 3) holding the slot of its last
@@ -19,7 +35,7 @@ export function manualPrograms(file = 'discovery/programs.json', env = process.e
  * (Listing all ~80k program accounts instead ran a 512 MB server out of memory.)
  * Helius rejects history lookups on the loader address, so this uses `listingConn` (the public RPC by default).
  */
-export async function recentlyDeployedPrograms(listingConn: Connection, newest = 40): Promise<string[]> {
+export async function recentlyDeployedPrograms(listingConn: Connection, newest = 40, lookupConns: Connection[] = [listingConn], pauseMs = 300): Promise<string[]> {
   try {
     const res = await fetch(listingConn.rpcEndpoint, {
       method: 'POST',
@@ -50,15 +66,17 @@ export async function recentlyDeployedPrograms(listingConn: Connection, newest =
     }
     body.result = undefined;
 
+    // Map each to its program. Try each connection in turn (Helius first: the public RPC rate-limits these),
+    // pace the calls, and keep whatever we found if some lookups fail.
     const out: string[] = [];
+    let failed = 0;
     for (const { address } of latest) {
-      // The program account is 36 bytes: tag 2, then its ProgramData address.
-      const programs = await listingConn.getProgramAccounts(BPF_UPGRADEABLE_LOADER, {
-        filters: [{ dataSize: 36 }, { memcmp: { offset: 4, bytes: address } }],
-        dataSlice: { offset: 0, length: 0 },
-      });
-      if (programs[0]) out.push(programs[0].pubkey.toBase58());
+      const program = await programForProgramData(address, lookupConns);
+      if (program) out.push(program);
+      else failed++;
+      if (pauseMs) await new Promise(r => setTimeout(r, pauseMs));
     }
+    if (failed) log.info('some recent deploys could not be mapped to a program', { found: out.length, failed });
     return out;
   } catch (e) {
     log.warn('could not list recent deploys', { error: String(e) });

@@ -285,3 +285,28 @@ test('Program Metadata IDLs (newer Anchor): a real mainnet account decodes to a 
   assert.ok(idl.instructions.length > 0);
   assert.ok(idl.instructions.every(ix => ix.discriminator.length === 8));
 });
+
+test('recent deploys: a rate-limited lookup falls back to the next connection, and failures keep partial results', async () => {
+  const { recentlyDeployedPrograms } = await import('../src/discovery/programs.js');
+  const pd = [PublicKey.unique(), PublicKey.unique(), PublicKey.unique()];
+  const slots = [300n, 100n, 200n];
+  const listing = Buffer.alloc(8);
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ result: pd.map((p, i) => {
+    listing.writeBigUInt64LE(slots[i]);
+    return { pubkey: p.toBase58(), account: { data: [listing.toString('base64'), 'base64'] } };
+  }) }))) as typeof fetch;
+  const programOf = (address: string) => PublicKey.findProgramAddressSync([Buffer.from(address.slice(0, 20))], PublicKey.default)[0];
+  const limited = { rpcEndpoint: 'http://helius', getProgramAccounts: async () => { throw new Error('429 Too Many Requests'); } } as unknown as Connection;
+  const working = { rpcEndpoint: 'http://public', getProgramAccounts: async (_p: PublicKey, o: { filters: { memcmp?: { bytes: string } }[] }) => {
+    const address = o.filters.find(f => f.memcmp)!.memcmp!.bytes;
+    return address === pd[2].toBase58() ? (() => { throw new Error('429'); })() : [{ pubkey: programOf(address), account: {} }];
+  } } as unknown as Connection;
+  try {
+    const ids = await recentlyDeployedPrograms(working, 2, [limited, working], 0);
+    // Newest two by slot are pd[0] (300) and pd[2] (200); pd[2]'s lookup fails everywhere, pd[0]'s falls back and succeeds.
+    assert.deepEqual(ids, [programOf(pd[0].toBase58()).toBase58()]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
