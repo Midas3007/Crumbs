@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { type Connection, PublicKey } from '@solana/web3.js';
 import { log } from '../core/logger.js';
-import { fetchTxOrSkip } from './validate.js';
 
 const BPF_UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
@@ -13,29 +12,34 @@ export function manualPrograms(file = 'discovery/programs.json', env = process.e
 }
 
 /**
- * Programs deployed or upgraded recently, read from the upgradeable loader's own transactions.
- * Loader instruction 2 = DeployWithMaxDataLen (program is account #2), 3 = Upgrade (program is account #1).
+ * Programs deployed or upgraded most recently.
+ * Every upgradeable program has a ProgramData account (loader tag 3) holding the slot of its last
+ * deploy; one getProgramAccounts call reads just those slots (~6 MB for ~24k programs), we take the
+ * newest, then map each ProgramData address back to its program (tag 2 accounts point at it).
+ * Helius rejects history lookups on the loader address, so this uses `listingConn` (the public RPC by default).
  */
-export async function recentlyDeployedPrograms(conn: Connection, scan = 40): Promise<string[]> {
-  const out = new Set<string>();
+export async function recentlyDeployedPrograms(listingConn: Connection, newest = 40): Promise<string[]> {
+  const tag = (n: number) => Buffer.from([n, 0, 0, 0]).toString('base64');
   try {
-    const sigs = await conn.getSignaturesForAddress(BPF_UPGRADEABLE_LOADER, { limit: scan });
-    for (const s of sigs) {
-      if (s.err) continue;
-      const tx = await fetchTxOrSkip(conn, s.signature);
-      if (!tx?.meta) continue;
-      const msg = tx.transaction.message;
-      const keys = msg.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses });
-      for (const ix of msg.compiledInstructions) {
-        if (!keys.get(ix.programIdIndex)?.equals(BPF_UPGRADEABLE_LOADER) || ix.data.length < 4) continue;
-        const kind = Buffer.from(ix.data).readUInt32LE(0);
-        const programIdx = kind === 2 ? ix.accountKeyIndexes[2] : kind === 3 ? ix.accountKeyIndexes[1] : undefined;
-        const program = programIdx !== undefined ? keys.get(programIdx) : undefined;
-        if (program) out.add(program.toBase58());
-      }
-    }
+    const programData = await listingConn.getProgramAccounts(BPF_UPGRADEABLE_LOADER, {
+      filters: [{ memcmp: { offset: 0, bytes: tag(3), encoding: 'base64' } }],
+      dataSlice: { offset: 4, length: 8 },
+    });
+    const latest = programData
+      .filter(a => a.account.data.length === 8)
+      .map(a => ({ address: a.pubkey.toBase58(), slot: a.account.data.readBigUInt64LE(0) }))
+      .sort((a, b) => (b.slot > a.slot ? 1 : b.slot < a.slot ? -1 : 0))
+      .slice(0, newest);
+    const wanted = new Set(latest.map(l => l.address));
+    // Program accounts: tag 2 followed by their ProgramData address (36 bytes in total).
+    const programs = await listingConn.getProgramAccounts(BPF_UPGRADEABLE_LOADER, {
+      filters: [{ dataSize: 36 }, { memcmp: { offset: 0, bytes: tag(2), encoding: 'base64' } }],
+      dataSlice: { offset: 4, length: 32 },
+    });
+    const byProgramData = new Map(programs.map(p => [new PublicKey(p.account.data).toBase58(), p.pubkey.toBase58()]));
+    return latest.map(l => byProgramData.get(l.address)).filter((p): p is string => Boolean(p && wanted));
   } catch (e) {
     log.warn('could not list recent deploys', { error: String(e) });
+    return [];
   }
-  return [...out];
 }

@@ -92,7 +92,7 @@ async function main() {
   if (cfg.discovery.anthropicApiKey) {
     const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, new ClaudeClassifier(cfg.discovery.anthropicApiKey), { credits, dailyBudgetUsd: cfg.discovery.dailyBudgetUsd });
     const discover = async () => {
-      const programs = [...manualPrograms(), ...(cfg.discovery.includeRecentDeploys ? await recentlyDeployedPrograms(conn) : [])];
+      const programs = [...manualPrograms(), ...(cfg.discovery.includeRecentDeploys ? await recentlyDeployedPrograms(new Connection(cfg.discovery.listingRpcUrl)) : [])];
       await engine.run([...new Set(programs)]);
     };
     setTimeout(() => void discover().catch(e => log.warn('discovery failed', { error: String(e) })), 60_000);

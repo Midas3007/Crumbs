@@ -275,3 +275,13 @@ test('engine: the daily Claude budget stops discovery for the day (classificatio
   assert.match(r.skipped.at(-1)!.why, /daily Claude budget/);
   assert.equal(engine.spentTodayUsd().toFixed(2), '0.40');
 });
+
+test('Program Metadata IDLs (newer Anchor): a real mainnet account decodes to a usable IDL', async () => {
+  const { decodeProgramMetadata, metadataIdlAddress } = await import('../src/discovery/idl.js');
+  const fx = JSON.parse(readFileSync(new URL('./fixtures/program-metadata-idl.json', import.meta.url), 'utf8')) as { address: string; program: string; data: string };
+  assert.ok(metadataIdlAddress(new PublicKey(fx.program)).equals(new PublicKey(fx.address)));
+  const m = decodeProgramMetadata(Buffer.from(fx.data, 'base64'));
+  const idl = parseIdl(fx.program, m!.json!);
+  assert.ok(idl.instructions.length > 0);
+  assert.ok(idl.instructions.every(ix => ix.discriminator.length === 8));
+});

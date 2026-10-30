@@ -55,6 +55,12 @@
 - Render: `render.yaml` now runs in Virginia with discovery on; DEPLOY.md has the step-by-step guide.
 - 72 tests.
 
+## Findings (Oct 30, Render)
+
+- Crumbs runs on Render (Virginia) in live mode. The first deploy crashed because the wallet key was pasted without its [ ] brackets; the key parser now accepts any pasted form (JSON with or without brackets, base58) and never echoes the key in errors.
+- Helius rejects `getSignaturesForAddress` on the BPF upgradeable loader ("Address is not supported"), so recent-deploy discovery found nothing. It now reads every ProgramData account's last-deploy slot in one getProgramAccounts call on the public RPC (`DISCOVERY_LISTING_RPC_URL`, ~23.5k programs, ~6 MB), takes the 40 newest and maps them back to program ids.
+- Newer Anchor programs publish their IDL through the **Program Metadata program** (`ProgM6JC…`): 820 canonical "idl" accounts on mainnet versus few new legacy IDL accounts. Crumbs now reads both. The header layout was verified against real accounts (enums at bytes 83-86, length at 87; data inline, UTF-8, zlib, JSON), with a recorded fixture and a test. Of the 30 newest programs, 1 published an IDL (122 instructions, 25 passing the signer screen): most fresh deploys are bots or tests and are skipped at no Claude cost.
+
 ## Findings (Oct 30, mainnet)
 
 - **First real discovery pass (Claude, 4 seed programs, 43 instructions classified):** Claude picked out TukTuk `run_task_v0` (confidence 0.85) as the paid crank. Validation confirmed 3/3 recent callers earned 15,000 lamports and classed it *paid_not_replayable* (one-shot tasks), which matches what we found by hand in M1. Claude marked every hpl-crons and fanout instruction as not a job, and 2 Kamino instructions as worth validating.

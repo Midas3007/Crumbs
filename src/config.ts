@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { Keypair, PublicKey } from '@solana/web3.js';
+import { base58Decode } from './core/base58.js';
 
 export const LAMPORTS_PER_SOL = 1_000_000_000n;
 
@@ -48,6 +49,8 @@ export interface Config {
     includeRecentDeploys: boolean;
     /** Most to spend on Claude per UTC day; discovery pauses until tomorrow when reached. */
     dailyBudgetUsd: number;
+    /** RPC used only to list recently deployed programs (Helius rejects that lookup). */
+    listingRpcUrl: string;
   };
   dashboard: {
     /** Public dashboard base URL, e.g. https://crumbs.vercel.app. Snapshots are pushed there every minute. */
@@ -77,21 +80,6 @@ function loadKeypair(env: NodeJS.ProcessEnv): Keypair | undefined {
       : undefined);
   if (!raw) return undefined;
   return parseSecretKey(raw);
-}
-
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
-function base58Decode(s: string): Uint8Array {
-  let n = 0n;
-  for (const ch of s) {
-    const v = B58.indexOf(ch);
-    if (v < 0) throw new Error('not base58');
-    n = n * 58n + BigInt(v);
-  }
-  const bytes: number[] = [];
-  while (n > 0n) { bytes.unshift(Number(n % 256n)); n /= 256n; }
-  for (const ch of s) { if (ch !== '1') break; bytes.unshift(0); }
-  return Uint8Array.from(bytes);
 }
 
 /**
@@ -169,6 +157,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       intervalHours: Number(env.DISCOVERY_INTERVAL_HOURS ?? '6'),
       includeRecentDeploys: bool(env.DISCOVERY_RECENT_DEPLOYS, true),
       dailyBudgetUsd: Number(env.DISCOVERY_DAILY_BUDGET_USD ?? '0.25'),
+      listingRpcUrl: env.DISCOVERY_LISTING_RPC_URL || 'https://api.mainnet-beta.solana.com',
     },
     dashboard: { url: env.DASHBOARD_URL || undefined, secret: env.DASHBOARD_SECRET || undefined },
     logLevel: (env.LOG_LEVEL ?? 'info') as Config['logLevel'],
