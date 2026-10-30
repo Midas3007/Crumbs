@@ -5,6 +5,8 @@ services:
     name: crumbs
     runtime: node
     plan: starter
+    # Close to Helius and to many Solana validators; latency is what wins races.
+    region: virginia
     branch: claude/dreamy-wright-inux8n
     buildCommand: npm ci && npm run build
     startCommand: npm start
@@ -36,6 +38,8 @@ services:
       - key: DASHBOARD_SECRET
         sync: false
       - key: DISCOVERY_RECENT_DEPLOYS
-        value: "false"
+        value: "true"
       - key: DISCOVERY_INTERVAL_HOURS
-        value: "24"
+        value: "6"
+      - key: DISCOVERY_DAILY_BUDGET_USD
+        value: "0.25"

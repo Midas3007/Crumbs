@@ -253,3 +253,25 @@ test('fetchTxOrSkip: an undecodable (version 1) transaction is skipped, other er
   const down = { getTransaction: async () => { throw new Error('fetch failed'); } } as unknown as Connection;
   await assert.rejects(fetchTxOrSkip(down, 'sig'), /fetch failed/);
 });
+
+test('Claude cost: computed from real token usage at Sonnet 5.5 prices', async () => {
+  const { costUsd } = await import('../src/discovery/classify.js');
+  // 10k input + 5k output + 2k cache read = 0.02 + 0.05 + 0.0004
+  assert.equal(costUsd({ input_tokens: 10_000, output_tokens: 5_000, cache_read_input_tokens: 2_000, cache_creation_input_tokens: 0 }).toFixed(4), '0.0704');
+});
+
+test('engine: the daily Claude budget stops discovery for the day (classifications already paid for are free)', async () => {
+  const ledger = new Ledger(':memory:');
+  const classifier = new StubClassifier([candidate()]);
+  (classifier as unknown as { lastCostUsd: number }).lastCostUsd = 0.2;
+  const other = Keypair.generate().publicKey.toBase58();
+  const engine = new DiscoveryEngine({} as Connection, testConfig(), ledger, new Recorder(), classifier, {
+    dailyBudgetUsd: 0.25,
+    fetch: async p => parseIdl(p.toBase58(), NEW_IDL),
+    validate: async () => validation('unprofitable'),
+  });
+  const r = await engine.run([PROGRAM, other, Keypair.generate().publicKey.toBase58()]);
+  assert.equal(classifier.calls, 2); // $0.20 spent after the first; the second fits under $0.25; then stop
+  assert.match(r.skipped.at(-1)!.why, /daily Claude budget/);
+  assert.equal(engine.spentTodayUsd().toFixed(2), '0.40');
+});

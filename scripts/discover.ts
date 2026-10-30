@@ -26,7 +26,7 @@ const notifier = cfg.telegram
 
 const explicit = args.filter(a => !a.startsWith('--'));
 const programs = explicit.length ? explicit : [...manualPrograms(), ...(args.includes('--recent') ? await recentlyDeployedPrograms(conn) : [])];
-const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, noAi ? new HeuristicClassifier() : new ClaudeClassifier(cfg.discovery.anthropicApiKey), { force: args.includes('--force') || noAi, credits: new CreditWatch(t => notifier.alert(t)) });
+const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, noAi ? new HeuristicClassifier() : new ClaudeClassifier(cfg.discovery.anthropicApiKey), { force: args.includes('--force') || noAi, credits: new CreditWatch(t => notifier.alert(t)), dailyBudgetUsd: cfg.discovery.dailyBudgetUsd });
 const r = await engine.run([...new Set(programs)]);
 
 console.log(`\nScanned ${r.programsScanned} programs, classified ${r.classified} instructions.`);

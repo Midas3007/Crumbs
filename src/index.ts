@@ -32,7 +32,7 @@ async function main() {
   const conn = new Connection(cfg.rpcUrl, { commitment: 'confirmed', fetch: creditWatchingFetch(credits) });
 
   const jobs: Job[] = [
-    new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports }),
+    new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports, agent: cfg.agentPubkey, prepareSec: 10 }),
   ];
 
   let summary = () => '';
@@ -50,7 +50,7 @@ async function main() {
     log.warn('TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set: alerts go to the log, approve with `npm run approve -- <type>`');
   }
 
-  const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs);
+  const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs, { backgroundSettle: true });
   const publisher = new Publisher(conn, cfg, ledger, guard, 'data/snapshot.json', () => {
     const s = executor.stats;
     return { since: executor.startedAt, checks: s.checks, looked: s.candidates, profitable: s.shadow + s.sent, sent: s.sent,
@@ -90,7 +90,7 @@ async function main() {
   timers.push(setInterval(loadApprovedDiscoveries, 60_000));
 
   if (cfg.discovery.anthropicApiKey) {
-    const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, new ClaudeClassifier(cfg.discovery.anthropicApiKey), { credits });
+    const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, new ClaudeClassifier(cfg.discovery.anthropicApiKey), { credits, dailyBudgetUsd: cfg.discovery.dailyBudgetUsd });
     const discover = async () => {
       const programs = [...manualPrograms(), ...(cfg.discovery.includeRecentDeploys ? await recentlyDeployedPrograms(conn) : [])];
       await engine.run([...new Set(programs)]);

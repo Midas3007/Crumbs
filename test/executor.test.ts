@@ -157,3 +157,34 @@ test('mode switch at runtime: /live makes the next tick send, /shadow stops it',
   assert.equal((await ex.tick())[0].outcome, 'shadow');
   assert.equal(sent.length, 1);
 });
+
+test('speed: a remembered compute measurement skips the measuring simulation', async () => {
+  const cfg = testConfig({ mode: 'shadow' });
+  const { conn } = fakeChain(10_000n);
+  let sims = 0;
+  const simulate = conn.simulateTransaction.bind(conn);
+  (conn as unknown as { simulateTransaction: unknown }).simulateTransaction = async (...a: unknown[]) => { sims++; return (simulate as (...x: unknown[]) => unknown)(...a); };
+  const ledger = new Ledger(':memory:');
+  const job = new FakeJob();
+  job.build = async () => ({ ...builtJob(15_000n), cuKey: 'same-kind' });
+  const ex = new Executor(conn, cfg, ledger, new Guardrails(ledger, cfg.caps, false), new Recorder(), [job]);
+  await ex.tick();
+  assert.equal(sims, 2); // measure + final
+  await ex.tick();
+  assert.equal(sims, 3); // final only
+});
+
+test('speed: with background confirmation, a send returns immediately as "sent" and settles later', async () => {
+  const cfg = testConfig({ mode: 'live' });
+  const { conn, sent } = fakeChain(10_000n);
+  const ledger = new Ledger(':memory:');
+  const ex = new Executor(conn, cfg, ledger, new Guardrails(ledger, cfg.caps, false), new Recorder(), [new FakeJob()], { backgroundSettle: true });
+  await ex.registerJobTypes();
+  ledger.setJobTypeStatus('fake.job', 'approved');
+  const [a] = await ex.tick();
+  assert.equal(a.outcome, 'sent');
+  assert.equal(sent.length, 1);
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(ledger.daySummary().landed, 1); // booked once the chain confirmed
+  assert.match(ex.heartbeat(), /ms per job/);
+});

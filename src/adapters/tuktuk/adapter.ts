@@ -24,12 +24,27 @@ export interface TuktukOptions {
   maxPerTick?: number;
   /** Hand over tasks this many seconds before they're due, so we can be on time. */
   leadSec?: number;
+  /**
+   * Speed: build transactions this many seconds before tasks are due (needs `agent`), so at the due
+   * second only the final simulation and the send are left.
+   */
+  prepareSec?: number;
+  agent?: PublicKey;
   /** Queues to ignore (e.g. test queues). */
   denyQueues?: string[];
   now?: () => number;
 }
 
-interface ScheduledTask { address: PublicKey; header: TaskHeader }
+export interface ScheduledTask { address: PublicKey; header: TaskHeader }
+
+/** A task this far past due that's still on-chain is stuck (its instructions keep failing). */
+const OVERDUE_SEC = 60;
+/** Stuck tasks are rechecked this often until they're about to turn stale. */
+const RECHECK_SEC = 600;
+/** Aim at the stale moment from this long before it until this long after. */
+const STALE_AIM_WINDOW_SEC = 120;
+/** Queues with absurd stale ages (e.g. u32::MAX) never turn stale in practice. */
+const MAX_STALE_AGE_SEC = 30 * 86_400;
 
 /**
  * Helium TukTuk: a permissionless crank queue. `run_task_v0` pays the task's `crank_reward`
@@ -44,6 +59,10 @@ export class TuktukJob implements Job {
   private schedule: ScheduledTask[] = [];
   private scheduleAt = 0;
   private queues = new Map<string, { queue: TaskQueue; luts: AddressLookupTableAccount[]; at: number }>();
+  private prepared = new Map<string, { at: number; job: Promise<BuiltJob> }>();
+  private refreshing?: Promise<void>;
+  private staleAge = new Map<string, number>();
+  private lastRecheck = new Map<string, number>();
   private readonly now: () => number;
 
   constructor(private conn: Connection, private opts: TuktukOptions) {
@@ -66,25 +85,86 @@ export class TuktukJob implements Job {
         return [];
       }
     });
+    // Each queue's stale age tells us when a stuck task becomes claimable without running.
+    const queueKeys = [...new Set(this.schedule.map(t => t.header.taskQueue.toBase58()))].map(k => new PublicKey(k));
+    for (let i = 0; i < queueKeys.length; i += 100) {
+      const infos = await this.conn.getMultipleAccountsInfo(queueKeys.slice(i, i + 100), 'confirmed');
+      infos.forEach((info, j) => {
+        if (!info) return;
+        try {
+          this.staleAge.set(queueKeys[i + j].toBase58(), decodeTaskQueue(info.data).staleTaskAge);
+        } catch { /* not a queue we can read: no stale timing for it */ }
+      });
+    }
     this.scheduleAt = this.now();
-    log.debug('tuktuk schedule refreshed', { tasks: this.schedule.length });
+    log.debug('tuktuk schedule refreshed', { tasks: this.schedule.length, queues: queueKeys.length });
+  }
+
+  /**
+   * When to try a task, in unix seconds, or undefined for "not now".
+   * - Fresh tasks: at their due time (racing the incumbent crank turner).
+   * - Stuck tasks (overdue and still there, so their inner instructions fail): at the moment they turn
+   *   stale, when run_task_v0 pays the reward without running them. Nobody races for these much.
+   * - In between, a slow recheck every 10 minutes in case they start working again.
+   */
+  fireAt(t: ScheduledTask, nowSec: number): { at: number; kind: 'due' | 'stale' | 'recheck' } | undefined {
+    if (t.header.trigger.kind === 'now') return { at: nowSec, kind: 'due' };
+    const due = t.header.trigger.ts;
+    if (due >= nowSec - OVERDUE_SEC) return { at: due, kind: 'due' };
+    const age = this.staleAge.get(t.header.taskQueue.toBase58());
+    const staleAt = age !== undefined && age < MAX_STALE_AGE_SEC ? due + age + 1 : undefined;
+    // From shortly before it turns stale until a while after, aim at the stale moment.
+    if (staleAt !== undefined && nowSec >= staleAt - STALE_AIM_WINDOW_SEC && nowSec <= staleAt + STALE_AIM_WINDOW_SEC) return { at: staleAt, kind: 'stale' };
+    const key = t.address.toBase58();
+    const last = this.lastRecheck.get(key) ?? 0;
+    if (nowSec - last < RECHECK_SEC) return undefined;
+    return { at: nowSec, kind: 'recheck' };
   }
 
   async detect(): Promise<Candidate[]> {
-    if (this.now() - this.scheduleAt > (this.opts.scheduleRefreshMs ?? 60_000)) await this.refreshSchedule();
-    const horizon = Math.floor(this.now() / 1000) + (this.opts.leadSec ?? 2);
-    const due = this.schedule
+    if (this.now() - this.scheduleAt > (this.opts.scheduleRefreshMs ?? 60_000)) {
+      // Only the very first load blocks; after that the (1-2s) refresh runs in the background.
+      const refresh = this.refreshing ??= this.refreshSchedule().finally(() => { this.refreshing = undefined; });
+      if (this.scheduleAt === 0) await refresh;
+      else refresh.catch(e => log.warn('tuktuk schedule refresh failed', { error: String(e) }));
+    }
+    const nowSec = Math.floor(this.now() / 1000);
+    const lead = this.opts.leadSec ?? 2;
+    const prepHorizon = nowSec + lead + (this.opts.prepareSec ?? 10);
+
+    const planned = this.schedule
       .filter(t => t.header.crankReward >= this.opts.minRewardLamports)
-      .filter(t => t.header.trigger.kind === 'now' || t.header.trigger.ts <= horizon)
-      .sort((a, b) => dueAt(a.header) - dueAt(b.header))
+      .flatMap(t => {
+        const f = this.fireAt(t, nowSec);
+        if (!f) return [];
+        const c: Candidate = {
+          id: `${t.address.toBase58()}:${f.kind}:${f.kind === 'recheck' ? Math.floor(nowSec / RECHECK_SEC) : f.at}`,
+          jobType: this.type,
+          description: `TukTuk task ${t.header.id} (reward ${t.header.crankReward} lamports, ${f.kind})`,
+          // Rechecks have no due time, so the executor treats them as ordinary (not time-critical) retries.
+          dueAt: f.kind === 'recheck' ? undefined : f.at,
+          data: { task: t.address.toBase58() },
+        };
+        return [{ t, f, c }];
+      });
+
+    // Build upcoming due and stale tasks ahead of time, so only the final simulation and send remain at the moment.
+    if (this.opts.agent) {
+      for (const { f, c } of planned) {
+        if (f.kind === 'recheck' || f.at <= nowSec || f.at > prepHorizon || this.prepared.has(c.id)) continue;
+        const job = this.buildNow(c, this.opts.agent);
+        job.catch(() => undefined); // a failed prebuild just means we build again at the moment
+        this.prepared.set(c.id, { at: this.now(), job });
+      }
+      for (const [id, p] of this.prepared) if (this.now() - p.at > 60_000) this.prepared.delete(id);
+    }
+
+    const ready = planned
+      .filter(({ f }) => f.at <= nowSec + lead)
+      .sort((a, b) => a.f.at - b.f.at)
       .slice(0, this.opts.maxPerTick ?? 25);
-    return due.map(t => ({
-      id: `${t.address.toBase58()}:${dueAt(t.header)}`,
-      jobType: this.type,
-      description: `TukTuk task ${t.header.id} (reward ${t.header.crankReward} lamports)`,
-      dueAt: dueAt(t.header),
-      data: { task: t.address.toBase58() },
-    }));
+    for (const { t, f } of ready) if (f.kind === 'recheck') this.lastRecheck.set(t.address.toBase58(), nowSec);
+    return ready.map(({ c }) => c);
   }
 
   /** Remove a task from the local schedule once it's been handled or found gone. */
@@ -110,6 +190,19 @@ export class TuktukJob implements Job {
   }
 
   async build(candidate: Candidate, agent: PublicKey): Promise<BuiltJob> {
+    const ready = this.prepared.get(candidate.id);
+    if (ready) {
+      this.prepared.delete(candidate.id); // use a prebuilt transaction once; retries rebuild from fresh state
+      try {
+        return await ready.job;
+      } catch {
+        /* fall through to a fresh build */
+      }
+    }
+    return this.buildNow(candidate, agent);
+  }
+
+  private async buildNow(candidate: Candidate, agent: PublicKey): Promise<BuiltJob> {
     const taskKey = new PublicKey((candidate.data as { task: string }).task);
     const info = await this.conn.getAccountInfo(taskKey, 'processed');
     if (!info) {
@@ -136,7 +229,10 @@ export class TuktukJob implements Job {
     }
 
     instructions.push(runTaskInstruction(agent, task, taskKey, [...remaining, ...freeTaskAccounts], freeIds));
-    return { instructions, lookupTables: luts, expectedRewardLamports: task.crankReward };
+    // Tasks from the same queue running the same programs use about the same compute.
+    const compiled = task.transaction.kind === 'compiled' ? task.transaction.tx : undefined;
+    const programs = compiled ? [...new Set(compiled.instructions.map(ix => compiled.accounts[ix.programIdIndex]?.toBase58()))].join(',') : 'remote';
+    return { instructions, lookupTables: luts, expectedRewardLamports: task.crankReward, cuKey: `tuktuk:${task.taskQueue.toBase58()}:${programs}:${task.freeTasks}` };
   }
 }
 

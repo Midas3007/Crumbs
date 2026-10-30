@@ -23,6 +23,10 @@ function fakeConn(overrides: Partial<Record<keyof Connection, unknown>> = {}): C
       return data ? { data, lamports: 1, owner: TUKTUK_PROGRAM_ID, executable: false } : null;
     },
     getAddressLookupTable: async () => ({ value: null }),
+    getMultipleAccountsInfo: async (ks: PublicKey[]) => ks.map(k => {
+      const data = accounts.get(k.toBase58());
+      return data ? { data, lamports: 1, owner: TUKTUK_PROGRAM_ID, executable: false } : null;
+    }),
     getProgramAccounts: async () => tasks.map(t => ({ pubkey: t.address, account: { data: accounts.get(t.address.toBase58())!.subarray(0, TASK_HEADER_LEN) } })),
     ...overrides,
   } as unknown as Connection;
@@ -129,18 +133,61 @@ test('build: a task someone else already ran is "gone", not an error', async () 
   await assert.rejects(job.build({ id: 'x', jobType: job.type, description: '', data: { task: tasks[0].address.toBase58() } }, AGENT.publicKey), JobGone);
 });
 
-test('detect: only due tasks that pay enough, earliest first', async () => {
-  const latest = Math.max(...tasks.map(t => (t.task.trigger.kind === 'timestamp' ? t.task.trigger.ts : 0)));
-  const job = new TuktukJob(fakeConn(), { minRewardLamports: 0n, leadSec: 0, now: () => (latest + 1) * 1000 });
-  const all = await job.detect();
-  assert.equal(all.length, 3);
-  assert.ok(all.every((c, i) => i === 0 || (all[i - 1].dueAt ?? 0) <= (c.dueAt ?? 0)));
+const FRESH = '1XHGp1Ku1ruEUi35UwRhcib9TM4xaaE2Rn2cdxJq7mg';   // hpl-crons task, due 1793403900
+const STUCK = 'dNnUREsv5wvDPVrpc6ruuAP9ncnMGTXjd1SD8Xo2Aw7';   // fanout claim that keeps failing, due 1793328060
+const STUCK_STALE_AT = 1793328060 + 172800 + 1;               // fanout-queue stale_task_age is 48h
 
+test('detect: fresh tasks at their due time, stuck tasks rechecked every 10 minutes (not every tick)', async () => {
+  let now = (1793403900 + 1) * 1000;
+  const job = new TuktukJob(fakeConn(), { minRewardLamports: 0n, leadSec: 0, now: () => now });
+  const first = await job.detect();
+  const kinds = Object.fromEntries(first.map(c => [c.id.split(':')[0], c.id.split(':')[1]]));
+  assert.equal(kinds[FRESH], 'due');
+  assert.equal(kinds[STUCK], 'recheck');
+  assert.equal(first.find(c => c.id.startsWith(STUCK))!.dueAt, undefined);
+  // Next second: the stuck ones are not offered again until 10 minutes have passed.
+  now += 1000;
+  assert.deepEqual((await job.detect()).map(c => c.id.split(':')[1]), ['due']);
+  now += 600_000;
+  assert.ok((await job.detect()).some(c => c.id.startsWith(`${STUCK}:recheck`)));
+});
+
+test('detect: a stuck task is aimed at the exact second it turns stale', async () => {
+  let now = (STUCK_STALE_AT - 100) * 1000;
+  const job = new TuktukJob(fakeConn(), { minRewardLamports: 0n, leadSec: 2, now: () => now });
+  assert.ok(!(await job.detect()).some(c => c.id.startsWith(STUCK))); // aimed, but not ready yet
+  now = (STUCK_STALE_AT - 1) * 1000;
+  const c = (await job.detect()).find(x => x.id.startsWith(STUCK))!;
+  assert.equal(c.id, `${STUCK}:stale:${STUCK_STALE_AT}`);
+  assert.equal(c.dueAt, STUCK_STALE_AT);
+});
+
+test('detect: nothing before anything is due; low rewards are skipped', async () => {
   const before = new TuktukJob(fakeConn(), { minRewardLamports: 0n, leadSec: 0, now: () => 0 });
   assert.equal((await before.detect()).length, 0);
-
-  const rich = new TuktukJob(fakeConn(), { minRewardLamports: 1_000_000n, now: () => (latest + 1) * 1000 });
+  const rich = new TuktukJob(fakeConn(), { minRewardLamports: 1_000_000n, now: () => (1793403900 + 1) * 1000 });
   assert.equal((await rich.detect()).length, 0);
+});
+
+test('prepare ahead: the transaction is built before the due time, so build() at the moment makes no RPC calls', async () => {
+  let calls = 0;
+  const conn = fakeConn();
+  const getAccountInfo = conn.getAccountInfo.bind(conn);
+  (conn as unknown as { getAccountInfo: unknown }).getAccountInfo = async (k: PublicKey) => { calls++; return getAccountInfo(k); };
+  let now = (1793403900 - 8) * 1000; // 8s before the fresh task is due
+  const job = new TuktukJob(conn, { minRewardLamports: 0n, leadSec: 2, prepareSec: 10, agent: AGENT.publicKey, now: () => now });
+  await job.detect();
+  await new Promise(r => setTimeout(r, 10)); // let the background build finish
+  const prepCalls = calls;
+  assert.ok(prepCalls > 0, 'built in the background');
+  now = 1793403900 * 1000;
+  const c = (await job.detect()).find(x => x.id.startsWith(FRESH))!;
+  const built = await job.build(c, AGENT.publicKey);
+  assert.equal(calls, prepCalls, 'no extra RPC at the due second');
+  assert.ok(built.cuKey?.startsWith('tuktuk:'));
+  // Used once: a retry builds from fresh state.
+  await job.build(c, AGENT.publicKey);
+  assert.ok(calls > prepCalls);
 });
 
 test('nextAvailableTaskIds skips used ids and respects capacity', () => {

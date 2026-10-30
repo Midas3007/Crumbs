@@ -43,8 +43,25 @@ export class DiscoveryEngine {
     private ledger: Ledger,
     private notifier: Notifier,
     private classifier: Classifier,
-    private opts: { disclosureDir?: string; force?: boolean; credits?: CreditWatch; validate?: ValidateFn; fetch?: (p: PublicKey) => Promise<ProgramIdl | undefined> } = {},
+    private opts: { disclosureDir?: string; force?: boolean; credits?: CreditWatch; dailyBudgetUsd?: number; validate?: ValidateFn; fetch?: (p: PublicKey) => Promise<ProgramIdl | undefined> } = {},
   ) {}
+
+  private dayKey() {
+    return `claude_usd:${new Date().toISOString().slice(0, 10)}`;
+  }
+
+  /** Claude spend so far today (UTC), from the actual token usage of each call. */
+  spentTodayUsd(): number {
+    return Number(this.ledger.getState(this.dayKey()) ?? 0);
+  }
+
+  private addSpend(usd: number) {
+    this.ledger.setState(this.dayKey(), String(this.spentTodayUsd() + usd));
+  }
+
+  private budgetLeftUsd(): number {
+    return this.opts.dailyBudgetUsd === undefined ? Infinity : this.opts.dailyBudgetUsd - this.spentTodayUsd();
+  }
 
   async run(programIds: string[]): Promise<DiscoveryReport> {
     const report: DiscoveryReport = { programsScanned: 0, skipped: [], classified: 0, validated: [], proposals: [], anomalies: [], rejected: [] };
@@ -52,6 +69,11 @@ export class DiscoveryEngine {
       try {
         await this.scanProgram(id, report);
       } catch (e) {
+        if (e instanceof BudgetReached) {
+          log.info('daily Claude budget reached; discovery continues tomorrow', { spentUsd: this.spentTodayUsd().toFixed(3), budgetUsd: this.opts.dailyBudgetUsd });
+          report.skipped.push({ program: id, why: `daily Claude budget ($${this.opts.dailyBudgetUsd}) reached` });
+          break;
+        }
         if (isClaudeCreditError(e)) {
           // No point trying the other programs; the next scheduled pass retries.
           await this.opts.credits?.report('claude', e instanceof Error ? e.message : String(e));
@@ -63,6 +85,7 @@ export class DiscoveryEngine {
       }
     }
     log.info('discovery pass done', {
+      claudeUsdToday: Number(this.spentTodayUsd().toFixed(4)),
       programs: report.programsScanned, classified: report.classified, validated: report.validated.length,
       proposals: report.proposals.length, anomalies: report.anomalies.length,
     });
@@ -86,8 +109,12 @@ export class DiscoveryEngine {
     const screened = screenProgram(idl.instructions);
     // Reuse a classification we already paid for (e.g. validation failed last time); otherwise ask Claude once and keep the answer.
     const cached = this.ledger.getClassification(programId, idl.hash) as JobCandidate[] | undefined;
+    if (!cached && screened.length > 0 && this.budgetLeftUsd() <= 0) throw new BudgetReached();
     const candidates = cached ?? await this.classifier.classify(idl, screened);
-    if (!cached) this.ledger.saveClassification(programId, idl.hash, candidates);
+    if (!cached) {
+      this.ledger.saveClassification(programId, idl.hash, candidates);
+      this.addSpend(this.classifier.lastCostUsd ?? 0);
+    }
     if (screened.length && !cached) await this.opts.credits?.recovered('claude');
     report.classified += candidates.length;
     log.info('classified', { program: idl.name, screened: screened.length, worth: candidates.filter(c => worthValidating(c)).length });
@@ -133,6 +160,8 @@ export class DiscoveryEngine {
   }
 }
 
+class BudgetReached extends Error {}
+
 export function evidenceText(c: JobCandidate, v: ValidationResult): string {
   const best = v.attempts.find(a => a.decision.ok) ?? v.attempts[0];
   return [
@@ -141,6 +170,7 @@ export function evidenceText(c: JobCandidate, v: ValidationResult): string {
     `Simulation: ${v.summary}`,
     best ? `Replayed ${best.replayedSignature.slice(0, 16)}…: ${best.decision.reason}, ${best.unitsConsumed} CU` : '',
     v.historicalGrossLamports.length ? `Recent callers earned (gross): ${v.historicalGrossLamports.map(h => formatSol(h)).join(', ')}` : '',
+    v.recentCallers !== undefined ? `Competition: ${v.recentCallers === 1 ? '1 wallet makes these calls (one bot owns it)' : `${v.recentCallers} different wallets made the last ${v.historicalGrossLamports.length} calls`}` : '',
   ].filter(Boolean).join('\n');
 }
 

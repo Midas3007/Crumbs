@@ -46,6 +46,15 @@
 - Hosting: `scripts/server-setup.sh` (any Debian/Ubuntu VM: Node 22, swap, build, systemd service with auto-restart) and DEPLOY.md (Google Cloud e2-micro free tier, Oracle, Render). `render.yaml` covers the paid Render route with a persistent disk.
 - 65 tests.
 
+## Done: faster, smarter job hunting
+
+- **Prepared ahead:** the TukTuk adapter builds each transaction up to 10s before the task is due (or turns stale), so at the moment only the final simulation and the send remain. A prepared transaction is used once; retries rebuild from fresh state.
+- **Fewer round trips at the due second:** compute measured once per kind of job (`cuKey`) and remembered (re-measured if a run fails); the priority fee is cached for 10s and the balance for 20s; the fee is computed locally (no getFeeForMessage); the pre-balance and the final simulation run in parallel; the schedule refreshes in the background; confirmations run in the background (at most 3 in flight), so the next job never waits 1-2s. The heartbeat reports ms per job and how late after due we sent.
+- **Stuck tasks:** each task gets a fire time. Fresh tasks fire at their due time. Stuck tasks (overdue but still on-chain) are rechecked every 10 minutes instead of every minute, and are aimed at the exact second they turn stale (due + queue `stale_task_age` + 1), when `run_task_v0` pays without running them. Queue stale ages are read with each schedule refresh.
+- **Claude for uncontested jobs:** recent-deploy scanning is back on, with a daily Claude budget (`DISCOVERY_DAILY_BUDGET_USD`, default $0.25) computed from real token usage and persisted per UTC day; paid-for classifications are free to reuse. Validation reports the competition (how many different wallets made the recent calls) in the Telegram evidence.
+- Render: `render.yaml` now runs in Virginia with discovery on; DEPLOY.md has the step-by-step guide.
+- 72 tests.
+
 ## Findings (Oct 30, mainnet)
 
 - **First real discovery pass (Claude, 4 seed programs, 43 instructions classified):** Claude picked out TukTuk `run_task_v0` (confidence 0.85) as the paid crank. Validation confirmed 3/3 recent callers earned 15,000 lamports and classed it *paid_not_replayable* (one-shot tasks), which matches what we found by hand in M1. Claude marked every hpl-crons and fanout instruction as not a job, and 2 Kamino instructions as worth validating.
@@ -62,7 +71,6 @@
 
 ## Next
 
-- Pre-build TukTuk transactions ahead of the due time so only the final simulation runs at T (shave ~0.5s).
 - First full discovery pass with Claude over the seed programs (needs ANTHROPIC_API_KEY).
 - Kamino flash-loan liquidation adapter (option A).
 - Deploy the dashboard on Vercel and set DASHBOARD_URL / DASHBOARD_SECRET on the agent.

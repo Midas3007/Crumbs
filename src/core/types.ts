@@ -26,6 +26,11 @@ export interface BuiltJob {
   watchedTokenAccounts?: WatchedTokenAccount[];
   /** Optional Jito tip already included in `instructions`. */
   tipLamports?: bigint;
+  /**
+   * Jobs with the same key use about the same compute, so the executor can reuse a measurement
+   * and skip a simulation round trip at the due second.
+   */
+  cuKey?: string;
 }
 
 /** Thrown by build() when the work has disappeared (someone else did it) — not an error worth alerting on. */

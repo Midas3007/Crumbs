@@ -54,6 +54,11 @@ export interface ValidationResult {
     thirdPartyMovements: FundMovement[];
   }[];
   historicalGrossLamports: bigint[];
+  /**
+   * How many different wallets made the recent calls we looked at: the competition.
+   * 1 means a single bot owns the job (it probably runs it on a timer); several means a race.
+   */
+  recentCallers?: number;
   anomaly?: { kind: 'third_party_funds' | 'pays_more_than_history'; detail: string; replayedSignature: string };
 }
 
@@ -246,12 +251,18 @@ export async function simulateReplay(conn: Connection, agent: PublicKey, job: Bu
   return { sim, decision: evaluateProfit(sim, job, caps, prices), movements };
 }
 
-/** Replay up to `want` recent calls; decide validated / unprofitable / failed / anomaly. */
+/** Replay up to `want` recent calls; decide validated / unprofitable / failed / anomaly. Adds the competition count. */
 export async function validateCandidate(
   conn: Connection, agent: PublicKey, program: PublicKey, discriminator: Buffer, callerIndexInIx: number,
   caps: Caps, prices: PriceBook = new Map(), opts: { scan?: number; want?: number; delayMs?: number } = {},
 ): Promise<ValidationResult> {
   const calls = await findRecentCalls(conn, program, discriminator, callerIndexInIx, opts);
+  const result = await judge(conn, agent, calls, caps, prices);
+  return { ...result, recentCallers: new Set(calls.map(c => c.caller.toBase58())).size };
+}
+
+/** Replay the recorded calls with our wallet and decide. */
+async function judge(conn: Connection, agent: PublicKey, calls: RecordedCall[], caps: Caps, prices: PriceBook): Promise<ValidationResult> {
   const historical = calls.map(c => c.callerGrossLamports);
   if (calls.length === 0) {
     return { status: 'no_live_trigger', summary: 'no recent replayable calls on mainnet', attempts: [], historicalGrossLamports: [] };

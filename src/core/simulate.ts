@@ -1,5 +1,7 @@
 import {
   ComputeBudgetProgram,
+  Ed25519Program,
+  Secp256k1Program,
   type Connection,
   type PublicKey,
   TransactionMessage,
@@ -13,6 +15,19 @@ const MAX_CU = 1_400_000;
 export function tokenAmount(data: Buffer | Uint8Array | null | undefined): bigint {
   if (!data || data.length < 72) return 0n;
   return Buffer.from(data).readBigUInt64LE(64);
+}
+
+/**
+ * Solana's fee: 5000 lamports per signature — including signatures checked by the ed25519/secp256k1
+ * precompiles — plus the priority fee (CU limit × micro-lamports per CU). Matches getFeeForMessage
+ * (verified on mainnet: 1 signature, 1000 CU at 1,000,000 µL = 6000).
+ */
+export function transactionFee(job: BuiltJob, txSignatures: number, cuLimit: number, microLamports: number): bigint {
+  const precompileSigs = job.instructions
+    .filter(ix => ix.programId.equals(Ed25519Program.programId) || ix.programId.equals(Secp256k1Program.programId))
+    .reduce((n, ix) => n + (ix.data[0] ?? 0), 0);
+  const priority = BigInt(Math.ceil((cuLimit * microLamports) / 1_000_000));
+  return 5000n * BigInt(txSignatures + precompileSigs) + priority;
 }
 
 export function compile(payer: PublicKey, job: BuiltJob, blockhash: string, cuLimit: number, microLamports: number): VersionedTransaction {
@@ -50,15 +65,15 @@ export async function simulateFinal(
   const watched = job.watchedTokenAccounts ?? [];
   const addresses = [payer, ...watched.map(w => w.address)];
 
-  const [pre, fee] = await Promise.all([
+  // Balances before and the simulation run in parallel: one round trip instead of two.
+  const [pre, r] = await Promise.all([
     conn.getMultipleAccountsInfo(addresses, 'processed'),
-    conn.getFeeForMessage(tx.message, 'processed'),
+    conn.simulateTransaction(tx, {
+      sigVerify: false,
+      commitment: 'processed',
+      accounts: { encoding: 'base64', addresses: addresses.map(a => a.toBase58()) },
+    }),
   ]);
-  const r = await conn.simulateTransaction(tx, {
-    sigVerify: false,
-    commitment: 'processed',
-    accounts: { encoding: 'base64', addresses: addresses.map(a => a.toBase58()) },
-  });
 
   const post = r.value.accounts ?? [];
   const postData = (i: number) => {
@@ -72,9 +87,8 @@ export async function simulateFinal(
     post: tokenAmount(postData(i + 1)),
   }));
 
-  // Base + priority fee. If the RPC can't price the message, fall back to what we know we set.
-  const priority = BigInt(Math.ceil((cuLimit * microLamports) / 1_000_000));
-  const feeLamports = fee.value !== null ? BigInt(fee.value) : 5000n * BigInt(tx.message.header.numRequiredSignatures) + priority;
+  // Computed locally instead of asking the RPC (one round trip less at the due second).
+  const feeLamports = transactionFee(job, tx.message.header.numRequiredSignatures, cuLimit, microLamports);
 
   return {
     tx,

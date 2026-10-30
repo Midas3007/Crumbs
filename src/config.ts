@@ -46,6 +46,8 @@ export interface Config {
     intervalHours: number;
     /** Also scan programs deployed/upgraded recently, not just the manual list. */
     includeRecentDeploys: boolean;
+    /** Most to spend on Claude per UTC day; discovery pauses until tomorrow when reached. */
+    dailyBudgetUsd: number;
   };
   dashboard: {
     /** Public dashboard base URL, e.g. https://crumbs.vercel.app. Snapshots are pushed there every minute. */
@@ -131,6 +133,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       anthropicApiKey: env.ANTHROPIC_API_KEY || undefined,
       intervalHours: Number(env.DISCOVERY_INTERVAL_HOURS ?? '6'),
       includeRecentDeploys: bool(env.DISCOVERY_RECENT_DEPLOYS, true),
+      dailyBudgetUsd: Number(env.DISCOVERY_DAILY_BUDGET_USD ?? '0.25'),
     },
     dashboard: { url: env.DASHBOARD_URL || undefined, secret: env.DASHBOARD_SECRET || undefined },
     logLevel: (env.LOG_LEVEL ?? 'info') as Config['logLevel'],

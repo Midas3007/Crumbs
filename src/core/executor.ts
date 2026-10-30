@@ -16,11 +16,21 @@ const FRESH_WINDOW_MS = 30_000;
 const FRESH_RETRY_MS = 1_000;
 /** Adapters may hand over work a little before it's due; we wait for it rather than poll again. */
 const MAX_WAIT_FOR_DUE_MS = 3_000;
+/** Speed: reuse the priority-fee estimate and wallet balance for a few seconds instead of asking every job. */
+const FEE_CACHE_MS = 10_000;
+const BALANCE_CACHE_MS = 20_000;
+/** Sends waiting for confirmation in the background at once; more waits for the next tick. */
+const MAX_IN_FLIGHT = 3;
+
+export interface ExecutorOptions {
+  /** Confirm sent transactions in the background so the next job isn't kept waiting (on in production). */
+  backgroundSettle?: boolean;
+}
 
 export interface Attempt {
   candidate: Candidate;
   decision?: ProfitDecision;
-  outcome: 'gone' | 'error' | 'rejected' | 'anomaly' | 'shadow' | 'blocked' | 'landed' | 'failed';
+  outcome: 'gone' | 'error' | 'rejected' | 'anomaly' | 'shadow' | 'blocked' | 'sent' | 'landed' | 'failed';
   signature?: string;
 }
 
@@ -36,6 +46,12 @@ export class Executor {
   /** Counts since start, for the heartbeat log and /status. */
   readonly startedAt = new Date().toISOString();
   readonly stats = { checks: 0, candidates: 0, gone: 0, rejected: 0, shadow: 0, sent: 0, anomalies: 0, errors: 0 };
+  /** How long a job takes from "start" to "decision/sent", and how late after its due time we sent. */
+  private timing = { jobs: 0, totalMs: 0, sends: 0, totalLateMs: 0 };
+  private cuCache = new Map<string, number>();
+  private feeCache = new Map<string, { micro: number; at: number }>();
+  private balance?: { lamports: bigint; at: number };
+  private inFlight = 0;
 
   constructor(
     private conn: Connection,
@@ -44,6 +60,7 @@ export class Executor {
     private guard: Guardrails,
     private notifier: Notifier,
     private jobs: Job[],
+    private opts: ExecutorOptions = {},
   ) {}
 
   addJob(job: Job) {
@@ -102,7 +119,14 @@ export class Executor {
         if (last !== undefined && Date.now() - last < (fresh ? FRESH_RETRY_MS : RETRY_COOLDOWN_MS)) continue;
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
         this.lastTried.set(c.id, Date.now());
+        const t0 = Date.now();
         const a = await this.process(job, c);
+        this.timing.jobs++;
+        this.timing.totalMs += Date.now() - t0;
+        if (a.signature && c.dueAt) {
+          this.timing.sends++;
+          this.timing.totalLateMs += Math.max(0, Date.now() - c.dueAt * 1000);
+        }
         this.count(a);
         results.push(a);
       }
@@ -125,8 +149,31 @@ export class Executor {
   /** One human-readable line: proof of life and what the agent has been doing. */
   heartbeat(): string {
     const s = this.stats;
+    const t = this.timing;
+    const speed = t.jobs ? ` · ${Math.round(t.totalMs / t.jobs)}ms per job` : '';
+    const late = t.sends ? `, sent ${Math.round(t.totalLateMs / t.sends)}ms after due on average` : '';
     return `alive · ${s.checks} checks · ${s.candidates} jobs looked at: ${s.shadow} profitable (shadow), ${s.sent} sent, `
-      + `${s.gone} already taken by other bots, ${s.rejected} not worth it, ${s.anomalies} anomalies, ${s.errors} errors`;
+      + `${s.gone} already taken by other bots, ${s.rejected} not worth it, ${s.anomalies} anomalies, ${s.errors} errors${speed}${late}`;
+  }
+
+  /** Average ms from picking up a job to deciding (and sending). */
+  avgJobMs(): number | null {
+    return this.timing.jobs ? Math.round(this.timing.totalMs / this.timing.jobs) : null;
+  }
+
+  private async priorityFee(key: string, writable: PublicKey[]): Promise<number> {
+    const hit = this.feeCache.get(key);
+    if (hit && Date.now() - hit.at < FEE_CACHE_MS) return hit.micro;
+    const micro = await estimatePriorityFee(this.conn, writable, !!this.cfg.heliusApiKey);
+    this.feeCache.set(key, { micro, at: Date.now() });
+    return micro;
+  }
+
+  private async walletLamports(): Promise<bigint> {
+    if (!this.balance || Date.now() - this.balance.at > BALANCE_CACHE_MS) {
+      this.balance = { lamports: BigInt(await this.conn.getBalance(this.cfg.agentPubkey, 'processed')), at: Date.now() };
+    }
+    return this.balance.lamports;
   }
 
   private pruneCooldowns() {
@@ -147,16 +194,33 @@ export class Executor {
   async estimateProfit(built: BuiltJob): Promise<{ tx?: VersionedTransaction; sim?: SimOutcome; decision: ProfitDecision }> {
     const payer = this.cfg.agentPubkey;
     const { value: blockhash } = await this.latestBlockhash();
-    const measured = await measureUnits(this.conn, payer, built, blockhash);
-    if (measured.err !== null) {
-      const sim: SimOutcome = { err: measured.err, logs: measured.logs, unitsConsumed: measured.units, lamportsPre: 0n, lamportsPost: 0n, feeLamports: 0n, tipLamports: 0n, tokenDeltas: [] };
-      return { sim, decision: evaluateProfit(sim, built, this.cfg.caps, this.prices) };
-    }
-    const cuLimit = computeUnitLimit(measured.units);
     const writable = built.instructions.flatMap(ix => ix.keys.filter(k => k.isWritable).map(k => k.pubkey));
-    const estimate = await estimatePriorityFee(this.conn, writable, !!this.cfg.heliusApiKey);
+    const feeKey = built.cuKey ?? built.instructions.at(-1)?.programId.toBase58() ?? 'default';
+
+    // Speed: if we've measured this kind of job before, skip the measuring simulation and go straight to the final one.
+    const known = built.cuKey ? this.cuCache.get(built.cuKey) : undefined;
+    let units: number;
+    if (known !== undefined) {
+      units = known;
+    } else {
+      const measured = await measureUnits(this.conn, payer, built, blockhash);
+      if (measured.err !== null) {
+        const sim: SimOutcome = { err: measured.err, logs: measured.logs, unitsConsumed: measured.units, lamportsPre: 0n, lamportsPost: 0n, feeLamports: 0n, tipLamports: 0n, tokenDeltas: [] };
+        return { sim, decision: evaluateProfit(sim, built, this.cfg.caps, this.prices) };
+      }
+      units = measured.units;
+    }
+    const cuLimit = computeUnitLimit(units);
+    const estimate = await this.priorityFee(feeKey, writable);
     const micro = clampPriorityFee(estimate, cuLimit, built.expectedRewardLamports, BASE_FEE_PER_SIGNATURE, this.cfg.caps.minProfitLamports);
     const { tx, outcome } = await simulateFinal(this.conn, payer, built, blockhash, cuLimit, micro);
+    if (outcome.err === null && built.cuKey) {
+      this.cuCache.set(built.cuKey, Math.max(outcome.unitsConsumed, this.cuCache.get(built.cuKey) ?? 0));
+    } else if (outcome.err !== null && known !== undefined && built.cuKey) {
+      // The remembered compute may have been too low for this one: forget it and measure properly.
+      this.cuCache.delete(built.cuKey);
+      return this.estimateProfit(built);
+    }
     return { tx, sim: outcome, decision: evaluateProfit(outcome, built, this.cfg.caps, this.prices) };
   }
 
@@ -209,7 +273,11 @@ export class Executor {
       return { candidate: c, decision, outcome: 'shadow' };
     }
 
-    const balance = BigInt(await this.conn.getBalance(this.cfg.agentPubkey, 'processed'));
+    if (this.inFlight >= MAX_IN_FLIGHT) {
+      log.debug('too many transactions awaiting confirmation; will retry', { job: job.type, candidate: c.id });
+      return { candidate: c, decision, outcome: 'blocked' };
+    }
+    const balance = await this.walletLamports();
     const wasPaused = this.guard.state().paused;
     const block = this.guard.checkBeforeSend(balance);
     if (block) {
@@ -234,10 +302,25 @@ export class Executor {
     }
     const id = this.ledger.recordAttempt({ ...base, outcome: 'sent', signature });
     log.info('sent', { job: job.type, candidate: c.id, signature, expectedNet: decision.netLamports });
+    this.balance = undefined; // our balance is about to change
 
+    if (this.opts.backgroundSettle) {
+      // Don't make the next job wait 1-2s for this confirmation.
+      this.inFlight++;
+      void this.settle(job, built, tx, bh.lastValidBlockHeight, signature, id)
+        .catch(e => log.warn('settling failed', { signature, error: String(e) }))
+        .finally(() => { this.inFlight--; });
+      return { candidate: c, decision, outcome: 'sent', signature };
+    }
+    const outcome = await this.settle(job, built, tx, bh.lastValidBlockHeight, signature, id);
+    return { candidate: c, decision, outcome, signature };
+  }
+
+  /** Wait for the chain's verdict, book the real P&L and check the caps. */
+  private async settle(job: Job, built: BuiltJob, tx: VersionedTransaction, lastValidBlockHeight: number, signature: string, id: number): Promise<'landed' | 'failed'> {
     let landedOk = false;
     try {
-      const conf = await this.conn.confirmTransaction({ signature, blockhash: tx.message.recentBlockhash, lastValidBlockHeight: bh.lastValidBlockHeight }, 'confirmed');
+      const conf = await this.conn.confirmTransaction({ signature, blockhash: tx.message.recentBlockhash, lastValidBlockHeight }, 'confirmed');
       landedOk = conf.value.err === null;
     } catch (e) {
       log.warn('confirmation failed', { signature, error: String(e) });
@@ -250,7 +333,7 @@ export class Executor {
 
     const breach = this.guard.checkAfterSend(realized.net, realized.fee);
     if (breach) await this.notifier.alert(`⏸️ Crumbs paused: ${breach}`);
-    return { candidate: c, decision, outcome, signature };
+    return outcome;
   }
 
   /** What the tx actually did to the agent's balances, read back from the chain. */

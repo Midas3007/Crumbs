@@ -26,6 +26,16 @@ export interface JobCandidate {
 
 export interface Classifier {
   classify(idl: ProgramIdl, screened: ScreenedInstruction[], docs?: string): Promise<JobCandidate[]>;
+  /** What the last classify() call cost, in USD (0 for the free heuristic). */
+  lastCostUsd?: number;
+}
+
+/** Claude Sonnet 5.5 prices, USD per million tokens (cache writes at 1.25× input for the 5-minute cache). */
+const PRICE = { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 };
+
+export function costUsd(u: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null }): number {
+  return (u.input_tokens * PRICE.input + u.output_tokens * PRICE.output
+    + (u.cache_creation_input_tokens ?? 0) * PRICE.cacheWrite + (u.cache_read_input_tokens ?? 0) * PRICE.cacheRead) / 1_000_000;
 }
 
 export const DISCOVERY_MODEL = 'claude-sonnet-5-5';
@@ -105,12 +115,14 @@ export function describeForModel(idl: ProgramIdl, screened: ScreenedInstruction[
 /** Claude-backed classifier. Never in the execution path — it only proposes candidates. */
 export class ClaudeClassifier implements Classifier {
   private client: Anthropic;
+  lastCostUsd = 0;
 
   constructor(apiKey?: string, private model = DISCOVERY_MODEL) {
     this.client = new Anthropic(apiKey ? { apiKey } : {});
   }
 
   async classify(idl: ProgramIdl, screened: ScreenedInstruction[], docs?: string): Promise<JobCandidate[]> {
+    this.lastCostUsd = 0;
     if (screened.length === 0) return [];
     const response = await this.client.beta.messages.create({
       model: this.model,
@@ -121,6 +133,7 @@ export class ClaudeClassifier implements Classifier {
       output_config: { effort: 'medium', format: { type: 'json_schema', schema: SCHEMA } },
       messages: [{ role: 'user', content: describeForModel(idl, screened, docs) }],
     });
+    this.lastCostUsd = costUsd(response.usage);
     if (response.stop_reason === 'refusal') throw new Error(`classifier refused: ${response.stop_details?.explanation ?? 'no detail'}`);
     if (response.stop_reason === 'max_tokens') throw new Error('classifier output truncated');
     const text = response.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('');

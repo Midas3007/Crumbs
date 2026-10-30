@@ -50,11 +50,21 @@ All three can be done from a phone browser.
 
 **Updating later:** rerun the setup script (step 3). It pulls the latest code, rebuilds and restarts, and keeps your `.env`, key and history.
 
-## Render (paid)
+## Render (paid), step by step
 
-New → Blueprint → pick the repo; Render reads `render.yaml`. Then:
-- **Environment → Secret Files:** add `agent.json` with the contents of `keys/agent.json`.
-- Fill in the env vars marked "sync: false" (Helius, Telegram, Anthropic, `DASHBOARD_SECRET`).
+1. **Stop Crumbs on your phone** (Ctrl+C). Only one copy may run with the wallet.
+2. At dashboard.render.com: **New → Blueprint**, connect GitHub and pick `Midas3007/Crumbs`.
+   Render reads `render.yaml`: a background worker in Virginia, a 1 GB disk for the history, Node 22.
+   Set the branch to `claude/dreamy-wright-inux8n` if asked.
+3. Render asks for the values marked secret. Copy them from your phone's `.env`:
+   `HELIUS_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `ANTHROPIC_API_KEY`, `DASHBOARD_SECRET`.
+4. Click **Apply**. Before it starts, open the service, go to **Environment → Secret Files → Add**, name it
+   `agent.json`, and paste the contents of `keys/agent.json` from the phone (`cat keys/agent.json`).
+   Save; Render restarts the worker.
+5. **Logs** shows the "starting" line, and Telegram gets "Crumbs started". It starts in shadow mode on a fresh
+   disk, so send `/jobs` (approve TukTuk) and `/live` again.
+
+Every push to the branch redeploys automatically; the disk keeps the history, approvals and live/shadow choice.
 
 ## Going live
 
