@@ -93,6 +93,19 @@
 - Likely cause of "13 profitable vs 7 sent" to confirm in the baseline: dropped Jito bundles wait up to ~60-90s for their blockhash to expire while holding one of the 3 in-flight slots, so profitable jobs meanwhile were held back (now `in_flight_limit`).
 - Existing databases are migrated in place (new columns added; history kept). 86 tests.
 
+## v2 upgrade — feature switches and circuit breakers (Oct 31)
+
+- `src/core/features.ts`: every way of making money is a feature with an on/off switch (`/features` on Telegram, saved in the ledger) and a circuit breaker. If its sends lose more than `BREAKER_THRESHOLD_LAMPORTS` (default 20,000) over the first 50 sends after it's switched on, or over any rolling hour, it switches itself off, alerts on Telegram with the numbers, and everything else keeps running. Dropped Jito bundles count as 0. The TukTuk adapter is the first feature (`adapter:tuktuk.run_task`). 92 tests.
+
+## v2 upgrade — Milestone 1 research: batching TukTuk tasks (Oct 31)
+
+Measured on mainnet (40 tasks sampled across the next 24h, plus 12 of Helium's own crank transactions):
+- **The program allows it:** nothing in `run_task_v0` limits one run per transaction, and queues can mix. Remote tasks need their own ed25519 instruction immediately before each run (exactly one signature each), so they keep their extra 5,000-lamport signature fee in a batch.
+- **It doesn't fit:** one task's transaction is already 805-931 bytes with the queue's lookup tables (Helium's own: 817-1,191 bytes). Two tasks overflow Solana's 1,232-byte limit. Helium's bot sends one task per transaction too.
+- **Our own lookup table doesn't pay:** with every account in a table, 5 tasks would fit (625 bytes; compute ~250k per task caps it at 5 anyway). But 514 of the 529 accounts in the sample appear in only one task, so a table can't be reused: each batch needs new addresses. Creating, extending (~25 addresses per transaction), deactivating and closing a table costs about 7 transactions (35,000 lamports) per batch of 5, against 24,000 saved. Rent also has to be locked meanwhile: 0.0148 SOL for 85 addresses, 0.0426 SOL for a full table (the wallet holds ~0.025).
+- **Contested tasks can't share a transaction:** a transaction succeeds or fails as a whole, so if Helium's bot takes one task, the whole batch drops.
+- Conclusion: batching TukTuk in one transaction isn't worth building. Per-task cost is already at the floor (5,000 base fee + 1,000 minimum Jito tip, no priority fee). The levers left are winning more races and finding more job types.
+
 ## Next
 
 - First full discovery pass with Claude over the seed programs (needs ANTHROPIC_API_KEY).

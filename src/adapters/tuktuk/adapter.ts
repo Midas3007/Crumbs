@@ -72,6 +72,7 @@ export function tuktukFailureReason(sim: Pick<SimOutcome, 'err' | 'logs'>): Reas
  */
 export class TuktukJob implements Job {
   readonly type = 'tuktuk.run_task';
+  readonly feature = 'adapter:tuktuk.run_task';
   readonly protocol = 'Helium TukTuk';
   readonly description = 'Run due tasks on TukTuk crank queues; each pays its crank_reward in SOL to the caller.';
   readonly rewardSource = 'github.com/helium/tuktuk solana-programs/programs/tuktuk/src/instructions/run_task_v0.rs (crank_turner_info.add_lamports(task_fee))';

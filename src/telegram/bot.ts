@@ -1,5 +1,6 @@
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import type { Guardrails } from '../core/caps.js';
+import type { Features } from '../core/features.js';
 import type { Ledger } from '../core/ledger.js';
 import { log } from '../core/logger.js';
 import { checklistText, type ModeSwitch } from '../core/mode.js';
@@ -23,7 +24,7 @@ export class TelegramNotifier implements Notifier {
   readonly bot: Bot;
 
   constructor(token: string, private chatId: string, private ledger: Ledger, private guard: Guardrails, private summary: () => string, private share: () => string = summary,
-    private controls?: { mode: ModeSwitch; walletLamports: () => Promise<bigint> }) {
+    private controls?: { mode: ModeSwitch; walletLamports: () => Promise<bigint>; features?: Features }) {
     this.bot = new Bot(token);
     const owner = (id: number | undefined) => String(id) === this.chatId;
 
@@ -67,9 +68,19 @@ export class TelegramNotifier implements Notifier {
       this.controls.mode.setShadow();
       await ctx.reply('◌ Shadow mode: simulating only, nothing will be sent. /live to go back.');
     });
+    this.bot.command('features', async ctx => {
+      if (!owner(ctx.chat?.id) || !this.controls?.features) return;
+      await this.sendFeatures(ctx.reply.bind(ctx));
+    });
     this.bot.on('callback_query:data', async ctx => {
       if (!owner(ctx.chat?.id ?? ctx.callbackQuery.message?.chat.id)) return ctx.answerCallbackQuery();
-      const [action, type] = ctx.callbackQuery.data.split('|');
+      const [action, type, value] = ctx.callbackQuery.data.split('|');
+      if (action === 'feature' && this.controls?.features) {
+        await ctx.answerCallbackQuery();
+        this.controls.features.set(type, value === 'on');
+        await ctx.editMessageReplyMarkup();
+        return void (await this.sendFeatures(ctx.reply.bind(ctx)));
+      }
       if (action === 'mode' && this.controls) {
         await ctx.answerCallbackQuery();
         await ctx.editMessageReplyMarkup();
@@ -98,6 +109,18 @@ export class TelegramNotifier implements Notifier {
 
   async stop(): Promise<void> {
     await this.bot.stop();
+  }
+
+  /** Every feature with its switch, P&L so far and, when off, why. */
+  private async sendFeatures(reply: (text: string, extra?: { reply_markup: InlineKeyboard }) => Promise<unknown>) {
+    const f = this.controls?.features;
+    if (!f) return;
+    const list = f.status();
+    const kb = new InlineKeyboard();
+    for (const x of list) kb.text(`${x.on ? '⏹ Switch off' : '▶️ Switch on'} ${x.name}`, `feature|${x.name}|${x.on ? 'off' : 'on'}`).row();
+    const lines = list.map(x => `${x.on ? '🟢' : '⚪'} ${x.name}: ${x.description}
+   ${x.sends} sends, net ${x.netLamports} lamports${x.on ? '' : `\n   off: ${x.offReason}`}`);
+    await reply(lines.join('\n\n') || 'No features.', { reply_markup: kb });
   }
 
   async alert(text: string): Promise<void> {

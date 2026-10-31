@@ -5,6 +5,7 @@ import { clampPriorityFee, estimatePriorityFee, BASE_FEE_PER_SIGNATURE } from '.
 import type { AttemptRecord, AttemptTiming, Ledger } from './ledger.js';
 import { log } from './logger.js';
 import { base58Encode } from './base58.js';
+import type { Features } from './features.js';
 import type { JitoClient } from './jito.js';
 import type { Notifier } from './notifier.js';
 import { evaluateProfit, type PriceBook } from './profitGuard.js';
@@ -38,6 +39,8 @@ export interface ExecutorOptions {
   jitoPollMs?: number;
   /** Look up who won lost races (on in production; uses a little RPC credit). */
   raceAnalysis?: boolean;
+  /** Feature flags and circuit breakers: a job whose feature is off is skipped, and sends feed the breakers. */
+  features?: Features;
 }
 
 export interface Attempt {
@@ -127,6 +130,7 @@ export class Executor {
     const results: Attempt[] = [];
     this.stats.checks++;
     for (const job of this.jobs) {
+      if (job.feature && this.opts.features && !this.opts.features.enabled(job.feature)) continue;
       let candidates: Candidate[];
       try {
         candidates = await job.detect();
@@ -394,6 +398,7 @@ export class Executor {
         counted(reason);
         if (reason === 'lost_race') this.maybeLookupWinner(job, c, {}, id, signature, true);
         this.stats.gone++;
+        await this.feedBreakers(job, built, 0n);
         log.info('dropped (no fee)', { job: job.type, signature, reason });
         return 'dropped';
       }
@@ -415,12 +420,21 @@ export class Executor {
     const reason: ReasonCode = landedOk ? 'landed' : 'failed_onchain';
     this.ledger.settleAttempt(id, outcome, realized.net, landedOk ? undefined : 'landed but failed (fee charged): lost race or failed on-chain', reason);
     counted(reason);
+    await this.feedBreakers(job, built, realized.net);
     if (!landedOk) this.maybeLookupWinner(job, c, {}, id, signature, true);
     log.info(outcome, { job: job.type, signature, realizedNet: realized.net });
 
     const breach = this.guard.checkAfterSend(realized.net, realized.fee);
     if (breach) await this.notifier.alert(`⏸️ Crumbs paused: ${breach}`);
     return outcome;
+  }
+
+  private async feedBreakers(job: Job, built: BuiltJob, net: bigint): Promise<void> {
+    const f = this.opts.features;
+    if (!f) return;
+    for (const name of new Set([...(job.feature ? [job.feature] : []), ...(built.features ?? [])])) {
+      await f.record(name, net).catch(e => log.warn('circuit breaker update failed', { feature: name, error: String(e) }));
+    }
   }
 
   /** Poll for a signature until it confirms or its blockhash expires (then it can never land). */

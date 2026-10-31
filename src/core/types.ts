@@ -31,6 +31,8 @@ export interface BuiltJob {
    * and skip a simulation round trip at the due second.
    */
   cuKey?: string;
+  /** Features (see core/features.ts) this send relies on; each gets the realised P&L for its circuit breaker. */
+  features?: string[];
 }
 
 /**
@@ -127,6 +129,8 @@ export interface Job {
   description: string;
   /** Where the reward mechanics are documented (source file, docs page). Shown in approvals. */
   rewardSource: string;
+  /** Feature flag that switches this whole job type on and off (with its own circuit breaker). */
+  feature?: string;
   detect(): Promise<Candidate[]>;
   build(candidate: Candidate, agent: PublicKey): Promise<BuiltJob>;
   /** Optional: map a failed simulation to a reason (e.g. "not ready yet" vs "someone else did it"). */

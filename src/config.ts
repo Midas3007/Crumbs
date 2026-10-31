@@ -64,6 +64,8 @@ export interface Config {
     /** Shared secret; the same value goes in the dashboard's CRUMBS_PUSH_SECRET. */
     secret?: string;
   };
+  /** A feature's circuit breaker trips when it loses more than this (first 50 sends, or any rolling hour). */
+  breakerThresholdLamports: bigint;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -171,6 +173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       url: env.JITO_URL || 'https://mainnet.block-engine.jito.wtf/api/v1',
     },
     dashboard: { url: env.DASHBOARD_URL || undefined, secret: env.DASHBOARD_SECRET || undefined },
+    breakerThresholdLamports: BigInt(env.BREAKER_THRESHOLD_LAMPORTS ?? '20000'),
     logLevel: (env.LOG_LEVEL ?? 'info') as Config['logLevel'],
   };
 }

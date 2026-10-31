@@ -3,6 +3,7 @@ import { TuktukJob } from './adapters/tuktuk/adapter.js';
 import { formatSol, loadConfig } from './config.js';
 import { Guardrails } from './core/caps.js';
 import { ModeSwitch } from './core/mode.js';
+import { Features } from './core/features.js';
 import { Executor } from './core/executor.js';
 import { JitoClient } from './core/jito.js';
 import { BASE_FEE_PER_SIGNATURE } from './core/fees.js';
@@ -31,6 +32,10 @@ async function main() {
   // Alerts when the Claude API or the RPC provider runs out of credits.
   const credits = new CreditWatch(t => notifier.alert(t));
   const conn = new Connection(cfg.rpcUrl, { commitment: 'confirmed', fetch: creditWatchingFetch(credits) });
+  // Each way of making money has an on/off switch (/features) and a circuit breaker that switches it off if it loses.
+  const features = new Features(ledger, [
+    { name: 'adapter:tuktuk.run_task', description: 'Helium TukTuk tasks', defaultOn: true },
+  ], t => notifier.alert(t), { thresholdLamports: cfg.breakerThresholdLamports });
 
   const jobs: Job[] = [
     new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports, agent: cfg.agentPubkey, prepareSec: 10 }),
@@ -44,7 +49,7 @@ async function main() {
     log.error(`TELEGRAM_CHAT_ID looks wrong: ${tgProblem}. Run \`npm run telegram-setup\` to find the right one. Alerts go to the log until then.`);
   } else if (cfg.telegram) {
     telegram = new TelegramNotifier(cfg.telegram.token, cfg.telegram.chatId, ledger, guard, () => summary(), () => share(),
-      { mode: modeSwitch, walletLamports: async () => BigInt(await conn.getBalance(cfg.agentPubkey, 'confirmed')) });
+      { mode: modeSwitch, walletLamports: async () => BigInt(await conn.getBalance(cfg.agentPubkey, 'confirmed')), features });
     notifier = telegram;
     telegram.start();
   } else {
@@ -54,6 +59,7 @@ async function main() {
   const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs, {
     backgroundSettle: true,
     raceAnalysis: true,
+    features,
     jito: cfg.jito.enabled ? { client: new JitoClient(cfg.jito.url), tipLamports: cfg.jito.tipLamports } : undefined,
   });
   const publisher = new Publisher(conn, cfg, ledger, guard, 'data/snapshot.json', () => {

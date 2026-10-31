@@ -159,3 +159,21 @@ test('ledger: an existing database from before Milestone 0 gains the new columns
   ledger.setWinner(id, { signature: 's', signer: 'w', slot: 1 });
   assert.equal(ledger.timings()[0].winnerSigner, 'w');
 });
+
+test('features: a job whose feature is switched off is skipped; its sends feed the breaker', async () => {
+  const { Features } = await import('../src/core/features.js');
+  const cfg = testConfig({ mode: 'live' });
+  const ledger = new Ledger(':memory:');
+  const features = new Features(ledger, [{ name: 'adapter:fake', description: '', defaultOn: true }], () => {});
+  const job = new TimedJob(false);
+  (job as unknown as { feature: string }).feature = 'adapter:fake';
+  const ex = new Executor(chain(9_000n, 'landed'), cfg, ledger, new Guardrails(ledger, cfg.caps, false), new Recorder(), [job],
+    { jito: { client: jito, tipLamports: 1_000n }, jitoPollMs: 0, features });
+  await ex.registerJobTypes();
+  ledger.setJobTypeStatus('fake.job', 'approved');
+  assert.equal((await ex.tick()).length, 1);
+  assert.deepEqual(features.status()[0].sends, 1);
+  assert.equal(features.status()[0].netLamports, 9_000n);
+  features.set('adapter:fake', false);
+  assert.equal((await ex.tick()).length, 0);
+});
