@@ -1,5 +1,6 @@
 import { formatSol } from '../config.js';
 import type { Ledger } from '../core/ledger.js';
+import { coveredBy } from '../discovery/covered.js';
 
 /**
  * Everything the public dashboard shows, as plain JSON (lamports as strings so nothing loses precision).
@@ -27,7 +28,8 @@ export interface Snapshot {
   daily: { day: string; realizedNetLamports: string; shadowNetLamports: string; crumbs: number; losses: number }[];
   jobTypes: { type: string; protocol: string; status: string; crumbs: number; losses: number; realizedNetLamports: string; shadowWins: number; shadowNetLamports: string }[];
   recent: { ts: string; jobType: string; outcome: string; netLamports: string; signature: string | null }[];
-  discoveries: { id: number; program: string; programName: string; instruction: string; status: string; confidence: number; summary: string; foundAt: string }[];
+  discoveries: { id: number; program: string; programName: string; instruction: string; status: string; confidence: number; summary: string; foundAt: string;
+    score?: number; callsPerHour?: number; competitors?: number }[];
   /** Work done since the agent last started — shows it's busy even on days nothing pays. */
   activity?: { since: string; checks: number; looked: number; profitable: number; sent: number; takenByOthers: number; notWorthIt: number; anomalies: number; errors: number };
   /** Every candidate's end state by reason code (counted per try), all time and today. Lamport sums as strings. */
@@ -79,6 +81,27 @@ export interface LatencyStats {
   winnerAfterVisible: number | null;
   /** Who beat us, most frequent first. */
   winners: { signer: string; n: number }[];
+}
+
+/**
+ * The discovery feed, best opportunities first: paid jobs by score (reward × calls per hour ÷ competitors),
+ * then the rest by recency. Instructions Crumbs already runs show as "covered".
+ */
+export function rankDiscoveries(rows: ReturnType<Ledger['listDiscoveries']>): Snapshot['discoveries'] {
+  const items = rows.map(x => {
+    let v: { score?: number; callsPerHour?: number; recentCallers?: number } = {};
+    try { v = x.validation_json ? JSON.parse(x.validation_json) : {}; } catch { /* old row */ }
+    const covered = coveredBy(x.program_id, x.instruction);
+    return {
+      id: x.id, program: x.program_id, programName: x.program_name, instruction: x.instruction,
+      status: covered ? 'covered' : x.status, confidence: x.confidence,
+      summary: covered ? `already running as ${covered}` : x.summary, foundAt: new Date(x.created_at).toISOString(),
+      score: v.score, callsPerHour: v.callsPerHour, competitors: v.recentCallers,
+    };
+  });
+  // Paid jobs first (best score first), then the rest, and what we already run last.
+  const group = (s: string) => (s === 'validated' || s === 'paid_not_replayable' ? 0 : s === 'covered' ? 2 : 1);
+  return items.sort((a, b) => group(a.status) - group(b.status) || (b.score ?? 0) - (a.score ?? 0));
 }
 
 export function median(xs: number[]): number | null {
@@ -162,10 +185,7 @@ export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
     recent: ledger.recentAttempts(25).map(r => ({
       ts: new Date(r.ts).toISOString(), jobType: r.jobType, outcome: r.outcome, netLamports: r.netLamports.toString(), signature: r.signature,
     })),
-    discoveries: ledger.listDiscoveries().slice(0, 30).map(x => ({
-      id: x.id, program: x.program_id, programName: x.program_name, instruction: x.instruction, status: x.status,
-      confidence: x.confidence, summary: x.summary, foundAt: new Date(x.created_at).toISOString(),
-    })),
+    discoveries: rankDiscoveries(ledger.listDiscoveries()).slice(0, 30),
     activity: i.activity,
     funnel: { allTime: funnelEntries(ledger.funnel()), today: funnelEntries(ledger.funnel(d.day)) },
     latency: latencyStats(ledger.timings()),

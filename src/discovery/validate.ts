@@ -1,3 +1,4 @@
+import { opportunityScore } from './covered.js';
 import {
   type AccountMeta, ComputeBudgetProgram, type Connection, Ed25519Program, PublicKey, Secp256k1Program, SystemProgram,
   TransactionInstruction, TransactionMessage, VersionedTransaction, type VersionedTransactionResponse,
@@ -59,6 +60,10 @@ export interface ValidationResult {
    * 1 means a single bot owns the job (it probably runs it on a timer); several means a race.
    */
   recentCallers?: number;
+  /** How often the instruction was called recently (from the slots of the calls we found). */
+  callsPerHour?: number;
+  /** Ranking for building adapters: average reward × calls per hour ÷ competitors (see discovery/covered.ts). */
+  score?: number;
   anomaly?: { kind: 'third_party_funds' | 'pays_more_than_history'; detail: string; replayedSignature: string };
 }
 
@@ -251,6 +256,13 @@ export async function simulateReplay(conn: Connection, agent: PublicKey, job: Bu
   return { sim, decision: evaluateProfit(sim, job, caps, prices), movements };
 }
 
+/** Calls per hour from the slots of recent calls (~0.4 s per slot). One call alone gives no rate. */
+export function callRate(slots: number[]): number {
+  if (slots.length < 2) return 0;
+  const span = Math.max(...slots) - Math.min(...slots);
+  return span > 0 ? Math.round(((slots.length - 1) / (span * 0.4)) * 3600 * 10) / 10 : 0;
+}
+
 /** Replay up to `want` recent calls; decide validated / unprofitable / failed / anomaly. Adds the competition count. */
 export async function validateCandidate(
   conn: Connection, agent: PublicKey, program: PublicKey, discriminator: Buffer, callerIndexInIx: number,
@@ -258,7 +270,11 @@ export async function validateCandidate(
 ): Promise<ValidationResult> {
   const calls = await findRecentCalls(conn, program, discriminator, callerIndexInIx, opts);
   const result = await judge(conn, agent, calls, caps, prices);
-  return { ...result, recentCallers: new Set(calls.map(c => c.caller.toBase58())).size };
+  const recentCallers = new Set(calls.map(c => c.caller.toBase58())).size;
+  const callsPerHour = callRate(calls.map(c => c.slot));
+  const rewards = calls.map(c => Number(c.callerGrossLamports));
+  const avg = rewards.length ? rewards.reduce((a, b) => a + b, 0) / rewards.length : 0;
+  return { ...result, recentCallers, callsPerHour, score: opportunityScore(avg, callsPerHour, recentCallers) };
 }
 
 /** Replay the recorded calls with our wallet and decide. */

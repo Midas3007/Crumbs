@@ -1,3 +1,4 @@
+import { coveredBy } from './covered.js';
 import { type Connection, PublicKey } from '@solana/web3.js';
 import { type Config, formatSol } from '../config.js';
 import { type CreditWatch, isClaudeCreditError } from '../core/creditWatch.js';
@@ -43,7 +44,7 @@ export class DiscoveryEngine {
     private ledger: Ledger,
     private notifier: Notifier,
     private classifier: Classifier,
-    private opts: { disclosureDir?: string; force?: boolean; credits?: CreditWatch; dailyBudgetUsd?: number; validate?: ValidateFn; fetch?: (p: PublicKey) => Promise<ProgramIdl | undefined> } = {},
+    private opts: { disclosureDir?: string; force?: boolean; covered?: (program: string, instruction: string) => string | undefined; credits?: CreditWatch; dailyBudgetUsd?: number; validate?: ValidateFn; fetch?: (p: PublicKey) => Promise<ProgramIdl | undefined> } = {},
   ) {}
 
   private dayKey() {
@@ -128,6 +129,16 @@ export class DiscoveryEngine {
       if (!worthValidating(c)) {
         const why = c.harmsUsers ? 'could harm users' : !c.permissionless ? 'not permissionless' : !c.paysCaller ? 'does not pay the caller' : `low confidence ${c.confidence}`;
         report.rejected.push({ candidate: c, status: 'not_a_job', summary: why });
+        continue;
+      }
+
+      const covered = (this.opts.covered ?? coveredBy)(c.program, c.instruction);
+      if (covered) {
+        this.ledger.upsertDiscovery({
+          programId: c.program, programName: c.programName, instruction: c.instruction, status: 'covered',
+          confidence: c.confidence, summary: `already running as ${covered}`, candidate: stored,
+        });
+        report.rejected.push({ candidate: c, status: 'covered', summary: `already running as ${covered}` });
         continue;
       }
 

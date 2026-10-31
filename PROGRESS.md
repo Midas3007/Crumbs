@@ -121,6 +121,13 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - **Hosting:** Render Virginia ($7/month starter worker) is already close to Helius' east-coast nodes and Jito's New York block engine; the global Jito URL routes there. Moving would gain little; LaserStream/gRPC needs a $499/month plan. Recommendation: stay.
 - The snapshot now carries feature switches with their P&L, the chain-clock lag and the learned tips. 99 tests.
 
+## v2 upgrade — Milestone 3: job types and discovery ranking (Oct 31)
+
+- **"tuktuk::run_task_v0 — Needs adapter" fixed:** that was discovery not recognising the instruction Crumbs already runs. `src/discovery/covered.ts` lists instructions with a dedicated adapter; discovery marks them `covered` (and skips validating them, saving RPC calls), and the feed relabels old rows. No new income there; it never was a separate job.
+- **Ranking:** validation now measures how often an instruction is called (from the slots of recent calls) and scores it: average reward × calls per hour ÷ distinct callers. Lamports per hour we might win taking an equal share against each competitor. The discovery feed lists paid jobs by score, then the rest, then covered ones.
+- **Kamino liquidations:** researched, not built. See `reports/kamino-liquidations.md`. $408M borrowed in the main market, but no liquidation in a 2 h sample, heavy professional competition, flash-loan + swap transactions, and a ~300 MB SDK. Recommendation: not at our size.
+- 101 tests.
+
 ## Next
 
 - First full discovery pass with Claude over the seed programs (needs ANTHROPIC_API_KEY).

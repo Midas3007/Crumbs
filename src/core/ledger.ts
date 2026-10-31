@@ -62,6 +62,7 @@ export interface DiscoveryRow {
   confidence: number;
   summary: string;
   candidate_json: string;
+  validation_json?: string | null;
   created_at: number;
 }
 
@@ -322,7 +323,7 @@ export class Ledger {
   }
 
   listDiscoveries(): DiscoveryRow[] {
-    return this.db.prepare('SELECT id, program_id, program_name, instruction, status, confidence, summary, candidate_json, created_at FROM discoveries ORDER BY updated_at DESC').all() as never;
+    return this.db.prepare('SELECT id, program_id, program_name, instruction, status, confidence, summary, candidate_json, validation_json, created_at FROM discoveries ORDER BY updated_at DESC').all() as never;
   }
 
   getDiscovery(id: number): DiscoveryRow | undefined {

@@ -175,6 +175,7 @@ function engineWith(status: ValidationResult['status'], extra: Partial<Validatio
   const sent: string[] = [];
   const engine = new DiscoveryEngine({} as Connection, testConfig(), ledger, notifier, classifier, {
     disclosureDir: dir,
+    covered: () => undefined, // these tests use TukTuk's IDL as a stand-in for an unknown program
     fetch: async () => parseIdl(PROGRAM, NEW_IDL),
     validate: async () => validation(status, extra),
     credits: new CreditWatch(async t => { sent.push(t); }),
@@ -236,6 +237,7 @@ test('engine: if validation fails mid-scan, the next run reuses the paid-for cla
   const classifier = new StubClassifier([candidate()]);
   let fail = true;
   const engine = new DiscoveryEngine({} as Connection, testConfig(), ledger, new Recorder(), classifier, {
+    covered: () => undefined,
     fetch: async () => parseIdl(PROGRAM, NEW_IDL),
     validate: async () => { if (fail) throw new Error('rpc hiccup'); return validation('validated'); },
   });
@@ -309,4 +311,37 @@ test('recent deploys: a rate-limited lookup falls back to the next connection, a
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test('covered: an instruction Crumbs already runs is marked covered, not validated or proposed again', async () => {
+  const ledger = new Ledger(':memory:');
+  let validated = 0;
+  const engine = new DiscoveryEngine({} as Connection, testConfig(), ledger, new Recorder(), new StubClassifier([candidate()]), {
+    fetch: async () => parseIdl(PROGRAM, NEW_IDL),
+    validate: async () => { validated++; return validation('paid_not_replayable'); },
+  });
+  await engine.run([PROGRAM]);
+  assert.equal(validated, 0);
+  assert.equal(ledger.listDiscoveries()[0].status, 'covered');
+});
+
+test('ranking: reward × calls per hour ÷ competitors; paid jobs first; old TukTuk rows show as covered', async () => {
+  const { callRate } = await import('../src/discovery/validate.js');
+  const { opportunityScore } = await import('../src/discovery/covered.js');
+  const { rankDiscoveries } = await import('../src/dashboard/snapshot.js');
+  assert.equal(callRate([1000, 1000 + 9000]), 1); // one interval of 9,000 slots ≈ 1 hour
+  assert.equal(callRate([5]), 0);
+  assert.equal(opportunityScore(15_000, 120, 1), 1_800_000);
+  assert.equal(opportunityScore(15_000, 120, 4), 450_000);
+
+  const ledger = new Ledger(':memory:');
+  const add = (instruction: string, status: string, score?: number, program = 'Prog111') =>
+    ledger.upsertDiscovery({ programId: program, programName: 'p', instruction, status, confidence: 0.9, summary: '', candidate: {}, validation: score === undefined ? undefined : { score } });
+  add('a', 'no_live_trigger');
+  add('b', 'paid_not_replayable', 100);
+  add('c', 'paid_not_replayable', 900);
+  add('run_task_v0', 'paid_not_replayable', 5, PROGRAM);
+  const ranked = rankDiscoveries(ledger.listDiscoveries());
+  assert.deepEqual(ranked.map(r => r.instruction), ['c', 'b', 'a', 'run_task_v0']);
+  assert.equal(ranked.find(r => r.instruction === 'run_task_v0')?.status, 'covered');
 });
