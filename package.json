@@ -17,7 +17,8 @@
     "validate-ix": "tsx --disable-warning=ExperimentalWarning scripts/validate-ix.ts",
     "discover": "tsx --disable-warning=ExperimentalWarning scripts/discover.ts",
     "telegram-setup": "tsx --disable-warning=ExperimentalWarning scripts/telegram-setup.ts",
-    "report": "tsx --disable-warning=ExperimentalWarning scripts/report.ts"
+    "report": "tsx --disable-warning=ExperimentalWarning scripts/report.ts",
+    "scan-paid": "tsx --disable-warning=ExperimentalWarning scripts/scan-paid.ts"
   },
   "repository": {
     "type": "git",
