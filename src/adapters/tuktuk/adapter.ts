@@ -9,8 +9,9 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 import { base58Encode } from '../../core/base58.js';
+import type { Focus } from '../../core/focus.js';
 import { log } from '../../core/logger.js';
-import { type BuiltJob, type Candidate, type Job, JobGone, type RaceWinner, type ReasonCode, type SimOutcome } from '../../core/types.js';
+import { type BuiltJob, type Candidate, type Job, JobGone, JobSkipped, type RaceWinner, type ReasonCode, type SimOutcome } from '../../core/types.js';
 import {
   decodeTask, decodeTaskHeader, decodeTaskQueue, encodeRunTaskV0, nextAvailableTaskIds, RUN_TASK_V0_DISCRIMINATOR,
   type Task, TASK_DISCRIMINATOR, TASK_HEADER_LEN, type TaskHeader, type TaskQueue, taskAddress, TUKTUK_PROGRAM_ID,
@@ -36,6 +37,8 @@ export interface TuktukOptions {
    * written, so the full schedule only needs re-reading every 10 minutes instead of every minute.
    */
   liveTasks?: () => boolean;
+  /** Focus (feature focus): skip kinds of task we keep losing; see core/focus.ts. */
+  focus?: { enabled: () => boolean; tracker: Focus };
   /** Queues to ignore (e.g. test queues). */
   denyQueues?: string[];
   now?: () => number;
@@ -278,15 +281,30 @@ export class TuktukJob implements Job {
 
   async build(candidate: Candidate, agent: PublicKey): Promise<BuiltJob> {
     const ready = this.prepared.get(candidate.id);
+    let built: BuiltJob | undefined;
     if (ready) {
       this.prepared.delete(candidate.id); // use a prebuilt transaction once; retries rebuild from fresh state
-      try {
-        return await ready.job;
-      } catch {
-        /* fall through to a fresh build */
-      }
+      built = await ready.job.catch(() => undefined); // a failed prebuild: build again below
     }
-    return this.buildNow(candidate, agent);
+    built ??= await this.buildNow(candidate, agent);
+    // Checked here, at the moment of trying (not when prebuilding), so the occasional probe isn't used up early.
+    const kind = this.kinds.get(candidate.id);
+    const focus = this.opts.focus;
+    if (kind && focus?.enabled() && !focus.tracker.worthTrying(kind)) {
+      throw new JobSkipped(`focus: skipping ${kind}, we keep losing these`);
+    }
+    return built;
+  }
+
+  /** Which kind of task this is, for focus: queue, compiled or remote, and why we're trying it now. */
+  private kinds = new Map<string, string>();
+
+  learn(c: Candidate, reason: ReasonCode): void {
+    const kind = this.kinds.get(c.id);
+    if (!kind || !this.opts.focus) return;
+    if (reason === 'landed') this.opts.focus.tracker.record(kind, true);
+    else if (reason === 'lost_race' || reason === 'not_included' || reason === 'failed_onchain') this.opts.focus.tracker.record(kind, false);
+    this.kinds.delete(c.id);
   }
 
   private async buildNow(candidate: Candidate, agent: PublicKey): Promise<BuiltJob> {
@@ -297,6 +315,11 @@ export class TuktukJob implements Job {
       throw new JobGone('task already run');
     }
     const task = decodeTask(info.data);
+    const why = candidate.id.split(':')[1] ?? 'due';
+    const kind = `${task.taskQueue.toBase58().slice(0, 6)}:${task.transaction.kind}:${why}`;
+    this.kinds.set(candidate.id, kind);
+    if (this.kinds.size > 5_000) this.kinds.delete(this.kinds.keys().next().value!);
+
     const { queue, luts } = await this.loadQueue(task.taskQueue, task.freeTasks > 0);
     const freeIds = nextAvailableTaskIds(queue.taskBitmap, task.freeTasks, queue.capacity);
     const freeTaskAccounts: AccountMeta[] = freeIds.map(id => ({ pubkey: taskAddress(task.taskQueue, id), isWritable: true, isSigner: false }));

@@ -148,6 +148,12 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - v2 is fast enough to race fresh tasks (sent 528 ms after callable, from 1.7 s) but Helium's bot lands in the same second and won 254 of 257 sampled races. Lost bundles are free.
 - **Fixed `adaptive_tip`:** it raised the tip on every lost race, hit its cap and cut the one v2 win to +2,000. It now rises only when outbid while the task is still open; learned tips reset (`tip_v2:` keys).
 
+## Where the wins come from, and focus mode (Oct 31)
+
+- On-chain check of all 8 wins: **5 remote tasks** on Helium's main queue (`H39gEs`), **1 stale** task (paid without running), 2 ordinary tasks raced at their due second (both Oct 30, before v2). In v2, ordinary tasks at the due second lost ~140 of 140 to Helium's bot.
+- Stuck-task pool is small: 5 overdue tasks, 2 turning stale in the next 24 h (20,000 lamports).
+- **focus** (feature, on): per kind of task (queue × compiled/remote × due/stale/recheck), a 24 h record of wins and losses. A kind with ≥ 20 losses and no win is skipped (new reason code `skipped_focus`), with one probe every 30 min; any win turns it back on. Saves the Helius credits spent on races the incumbent always wins, and keeps going after remote and stale tasks. The heartbeat log says what's being skipped. 105 tests.
+
 ## Next
 
 - Measure a clean v2 window with the tip fix; if Helius credits get tight, stop racing fresh tasks the incumbent always wins.

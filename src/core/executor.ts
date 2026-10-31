@@ -13,7 +13,7 @@ import type { JitoClient } from './jito.js';
 import type { Notifier } from './notifier.js';
 import { evaluateProfit, type PriceBook } from './profitGuard.js';
 import { computeUnitLimit, measureUnits, simulateFinal, transactionFee } from './simulate.js';
-import { type BuiltJob, type Candidate, type Job, JobGone, type ProfitDecision, type ReasonCode, type SimOutcome } from './types.js';
+import { type BuiltJob, type Candidate, type Job, JobGone, JobSkipped, type ProfitDecision, type ReasonCode, type SimOutcome } from './types.js';
 
 /** Don't re-try the same candidate more often than this after a rejection... */
 const RETRY_COOLDOWN_MS = 60_000;
@@ -343,6 +343,7 @@ export class Executor {
     try {
       built = await job.build(c, this.cfg.agentPubkey);
     } catch (e) {
+      if (e instanceof JobSkipped) return { candidate: c, outcome: 'gone', reason: 'skipped_focus' };
       if (e instanceof JobGone) {
         log.debug('job gone', { job: job.type, candidate: c.id, why: e.message });
         this.maybeLookupWinner(job, c, timing);
@@ -488,7 +489,7 @@ export class Executor {
         this.ledger.settleAttempt(id, 'dropped', 0n,
           reason === 'lost_race' ? 'lost race: someone else did it first, no fee charged' : 'bundle not included (outbid or late), job still open, no fee charged', reason);
         counted(reason);
-        this.learnTip(job, reason);
+        this.learnTip(job, reason, c);
         if (reason === 'lost_race') this.maybeLookupWinner(job, c, {}, id, signature, true);
         this.stats.gone++;
         await this.feedBreakers(job, built, 0n);
@@ -513,7 +514,7 @@ export class Executor {
     const reason: ReasonCode = landedOk ? 'landed' : 'failed_onchain';
     this.ledger.settleAttempt(id, outcome, realized.net, landedOk ? undefined : 'landed but failed (fee charged): lost race or failed on-chain', reason);
     counted(reason);
-    this.learnTip(job, reason);
+    this.learnTip(job, reason, c);
     await this.feedBreakers(job, built, realized.net);
     if (!landedOk) this.maybeLookupWinner(job, c, {}, id, signature, true);
     log.info(outcome, { job: job.type, signature, realizedNet: realized.net });
@@ -523,8 +524,9 @@ export class Executor {
     return outcome;
   }
 
-  /** adaptive_tip: learn from how a Jito send ended. */
-  private learnTip(job: Job, reason: ReasonCode): void {
+  /** adaptive_tip and focus: learn from how a Jito send ended. */
+  private learnTip(job: Job, reason: ReasonCode, c?: Candidate): void {
+    if (c) job.learn?.(c, reason);
     if (this.opts.jito && this.opts.tipTuner && this.on(FEATURE.adaptiveTip)) this.opts.tipTuner.learn(job.type, reason);
   }
 

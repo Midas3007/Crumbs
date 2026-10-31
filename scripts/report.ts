@@ -13,6 +13,7 @@ import { funnelStages, REASON_STAGE, type Snapshot } from '../src/dashboard/snap
 
 const REASON_TEXT: Record<string, string> = {
   gone_before_sim: 'already gone when we built it (someone else did it)',
+  skipped_focus: 'skipped by focus mode (a kind of task we keep losing)',
   taken_by_others: 'simulation shows someone else already did it',
   not_ready: 'not callable yet (task not due on-chain)',
   task_failing: "the task's own instruction fails (stuck task)",

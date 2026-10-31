@@ -4,6 +4,7 @@ import { formatSol, loadConfig } from './config.js';
 import { Guardrails } from './core/caps.js';
 import { ModeSwitch } from './core/mode.js';
 import { Features } from './core/features.js';
+import { Focus } from './core/focus.js';
 import { Executor, FEATURE } from './core/executor.js';
 import { ChainClock } from './core/chainClock.js';
 import { TipTuner } from './core/tipTuner.js';
@@ -44,6 +45,7 @@ async function main() {
     { name: FEATURE.jitoSlots, description: 'free a send slot as soon as a race is lost; up to 10 pending Jito sends', defaultOn: v2 },
     { name: FEATURE.parallelJobs, description: 'work on up to 4 jobs at once', defaultOn: v2 },
     { name: FEATURE.adaptiveTip, description: 'learn the Jito tip per job type from wins and losses', defaultOn: v2 },
+    { name: 'focus', description: 'stop racing kinds of task we keep losing (saves Helius credits); keep the ones we win', defaultOn: true },
     { name: 'live_tasks', description: 'new TukTuk tasks over websocket; full re-read every 10 min instead of every minute', defaultOn: v2 },
   ], t => notifier.alert(t), { thresholdLamports: cfg.breakerThresholdLamports });
   // The before/after line: the first time any v2 speed feature is on. Everything earlier is the baseline.
@@ -54,11 +56,13 @@ async function main() {
     ledger.setState('v2_since', String(Date.now()));
     return Date.now();
   };
+  const focus = new Focus();
   const chainClock = new ChainClock(conn); // subscribes on first use, only while chain_clock is on
   const tipTuner = new TipTuner(ledger, cfg.jito.tipLamports);
 
   const jobs: Job[] = [
-    new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports, agent: cfg.agentPubkey, prepareSec: 10, liveTasks: () => features.enabled('live_tasks') }),
+    new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports, agent: cfg.agentPubkey, prepareSec: 10, liveTasks: () => features.enabled('live_tasks'),
+      focus: { enabled: () => features.enabled('focus'), tracker: focus } }),
   ];
 
   let summary = () => '';
@@ -151,7 +155,11 @@ async function main() {
   timers.push(setInterval(publish, 60_000));
 
   // Proof of life in the log every 5 minutes (shadow mode is otherwise quiet when nothing pays).
-  timers.push(setInterval(() => log.info(`${executor.heartbeat()} · chain clock ${chainClock.live ? `live, ${chainClock.lagMs}ms behind our clock` : 'not live'}`), 5 * 60_000));
+  timers.push(setInterval(() => {
+    const skipping = focus.summary().filter(k => k.skipping).map(k => k.kind);
+    log.info(`${executor.heartbeat()} · chain clock ${chainClock.live ? `live, ${chainClock.lagMs}ms behind our clock` : 'not live'}`
+      + ` · focus skipping: ${skipping.length ? skipping.join(', ') : 'nothing'}`);
+  }, 5 * 60_000));
 
   // Daily summary at 00:00 UTC.
   timers.push(setInterval(() => {

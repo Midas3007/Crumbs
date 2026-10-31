@@ -42,6 +42,7 @@ export interface BuiltJob {
 export type ReasonCode =
   // Never reached a usable simulation
   | 'gone_before_sim' // gone when we went to build it: someone else did the work
+  | 'skipped_focus' // focus mode: a kind of job we keep losing, not tried (saves RPC credits)
   | 'taken_by_others' // the simulation shows someone else already did the work
   | 'not_ready' // the protocol says it isn't callable yet (e.g. TukTuk TaskNotReady)
   | 'task_failing' // the work itself fails (a stuck task's inner instruction errors)
@@ -76,6 +77,9 @@ export interface RaceWinner {
 
 /** Thrown by build() when the work has disappeared (someone else did it) — not an error worth alerting on. */
 export class JobGone extends Error {}
+
+/** Thrown by build() when we chose not to try (e.g. focus mode skips a kind of job we never win). */
+export class JobSkipped extends JobGone {}
 
 export interface TokenDelta {
   mint: string;
@@ -137,6 +141,8 @@ export interface Job {
   failureReason?(sim: SimOutcome): ReasonCode | undefined;
   /** Optional: is the work still there? Tells a lost race from a bundle that just wasn't included. */
   stillAvailable?(candidate: Candidate): Promise<boolean>;
+  /** Optional: learn from how a sent job ended (e.g. focus on the kinds of job we win). */
+  learn?(candidate: Candidate, reason: ReasonCode): void;
   /** Optional: who did the work instead of us (for race analysis). `ours` is our own signature, if we sent one. */
   whoTookIt?(candidate: Candidate, ours?: string): Promise<RaceWinner | undefined>;
 }

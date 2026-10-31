@@ -62,6 +62,7 @@ export function fmtMs(ms: number | null | undefined): string {
 /** Plain words for the agent's reason codes. */
 export const REASON_TEXT: Record<string, string> = {
   gone_before_sim: 'already done by another bot',
+  skipped_focus: 'skipped: a kind we keep losing',
   taken_by_others: 'another bot did it first',
   not_ready: 'not callable yet on-chain',
   task_failing: 'stuck task (its own instruction fails)',
@@ -85,7 +86,7 @@ export const REASON_TEXT: Record<string, string> = {
 
 /** Which funnel stage each reason drops out at. Mirror of src/dashboard/snapshot.ts. */
 export const REASON_STAGE: Record<string, number> = {
-  gone_before_sim: 0, build_error: 0, rpc_error: 0,
+  gone_before_sim: 0, skipped_focus: 0, build_error: 0, rpc_error: 0,
   taken_by_others: 1, not_ready: 1, task_failing: 1, sim_failed_other: 1,
   unprofitable: 2, over_spend_cap: 2, unknown_balance: 2, anomaly: 2,
   shadow: 3, unapproved: 3, in_flight_limit: 3, cap_blocked: 3, send_error: 3,

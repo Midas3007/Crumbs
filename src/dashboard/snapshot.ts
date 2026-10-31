@@ -79,7 +79,7 @@ export function periodStats(p: ReturnType<Ledger['period']>, hours: number): Per
 
 /** Which funnel stage each reason drops out at (or ends in). */
 export const REASON_STAGE: Record<string, 'before_sim' | 'sim_failed' | 'not_worth_it' | 'not_sent' | 'sent'> = {
-  gone_before_sim: 'before_sim', build_error: 'before_sim', rpc_error: 'before_sim',
+  gone_before_sim: 'before_sim', skipped_focus: 'before_sim', build_error: 'before_sim', rpc_error: 'before_sim',
   taken_by_others: 'sim_failed', not_ready: 'sim_failed', task_failing: 'sim_failed', sim_failed_other: 'sim_failed',
   unprofitable: 'not_worth_it', over_spend_cap: 'not_worth_it', unknown_balance: 'not_worth_it', anomaly: 'not_worth_it',
   shadow: 'not_sent', unapproved: 'not_sent', in_flight_limit: 'not_sent', cap_blocked: 'not_sent', send_error: 'not_sent',
