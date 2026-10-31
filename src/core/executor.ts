@@ -2,14 +2,14 @@ import type { Connection, Keypair, PublicKey, VersionedTransaction } from '@sola
 import { type Config, formatSol } from '../config.js';
 import type { Guardrails } from './caps.js';
 import { clampPriorityFee, estimatePriorityFee, BASE_FEE_PER_SIGNATURE } from './fees.js';
-import type { AttemptRecord, Ledger } from './ledger.js';
+import type { AttemptRecord, AttemptTiming, Ledger } from './ledger.js';
 import { log } from './logger.js';
 import { base58Encode } from './base58.js';
 import type { JitoClient } from './jito.js';
 import type { Notifier } from './notifier.js';
 import { evaluateProfit, type PriceBook } from './profitGuard.js';
 import { computeUnitLimit, measureUnits, simulateFinal } from './simulate.js';
-import { type BuiltJob, type Candidate, type Job, JobGone, type ProfitDecision, type SimOutcome } from './types.js';
+import { type BuiltJob, type Candidate, type Job, JobGone, type ProfitDecision, type ReasonCode, type SimOutcome } from './types.js';
 
 /** Don't re-try the same candidate more often than this after a rejection... */
 const RETRY_COOLDOWN_MS = 60_000;
@@ -23,6 +23,8 @@ const FEE_CACHE_MS = 10_000;
 const BALANCE_CACHE_MS = 20_000;
 /** Sends waiting for confirmation in the background at once; more waits for the next tick. */
 const MAX_IN_FLIGHT = 3;
+/** Race analysis reads the winner's transaction from the chain; at most one lookup this often (RPC credits). */
+const WINNER_LOOKUP_EVERY_MS = 60_000;
 
 export interface ExecutorOptions {
   /** Confirm sent transactions in the background so the next job isn't kept waiting (on in production). */
@@ -34,13 +36,25 @@ export interface ExecutorOptions {
   jito?: { client: JitoClient; tipLamports: bigint };
   /** How often to check whether a bundle landed (tests use 0). */
   jitoPollMs?: number;
+  /** Look up who won lost races (on in production; uses a little RPC credit). */
+  raceAnalysis?: boolean;
 }
 
 export interface Attempt {
   candidate: Candidate;
   decision?: ProfitDecision;
   outcome: 'gone' | 'error' | 'rejected' | 'anomaly' | 'shadow' | 'blocked' | 'sent' | 'landed' | 'failed' | 'dropped';
+  /** Exactly one per candidate; undefined only while a background send is still settling. */
+  reason?: ReasonCode;
   signature?: string;
+}
+
+/** A failed simulation, read from its logs. Adapters can be more precise via Job.failureReason. */
+export function genericFailureReason(sim: SimOutcome): ReasonCode {
+  const text = `${JSON.stringify(sim.err)} ${sim.logs.join(' ')}`;
+  // Anchor 3012 AccountNotInitialized / "account not found": the account we act on is gone.
+  if (/AccountNotInitialized|"Custom":3012|AccountNotFound|could not find account/i.test(text)) return 'taken_by_others';
+  return 'sim_failed_other';
 }
 
 /**
@@ -61,6 +75,7 @@ export class Executor {
   private feeCache = new Map<string, { micro: number; at: number }>();
   private balance?: { lamports: bigint; at: number };
   private inFlight = 0;
+  private lastWinnerLookup = 0;
 
   constructor(
     private conn: Connection,
@@ -129,7 +144,7 @@ export class Executor {
         if (wait > 0) await new Promise(r => setTimeout(r, wait));
         this.lastTried.set(c.id, Date.now());
         const t0 = Date.now();
-        const a = await this.process(job, c);
+        const a = await this.process(job, c, { visibleMs: c.dueAt ? c.dueAt * 1000 : undefined, detectedMs: t0 });
         this.timing.jobs++;
         this.timing.totalMs += Date.now() - t0;
         if (a.signature && c.dueAt) {
@@ -137,6 +152,8 @@ export class Executor {
           this.timing.totalLateMs += Math.max(0, Date.now() - c.dueAt * 1000);
         }
         this.count(a);
+        // Sends are counted when they settle (landed / lost race / ...), everything else now.
+        if (a.reason) this.ledger.countReason(job.type, a.reason, funnelAmounts(a.reason, a.decision, this.cfg.caps.minProfitLamports));
         results.push(a);
       }
     }
@@ -238,17 +255,18 @@ export class Executor {
     return { tx, sim: outcome, decision: evaluateProfit(outcome, built, this.cfg.caps, this.prices), built };
   }
 
-  async process(job: Job, c: Candidate): Promise<Attempt> {
+  async process(job: Job, c: Candidate, timing: AttemptTiming = {}): Promise<Attempt> {
     let built: BuiltJob;
     try {
       built = await job.build(c, this.cfg.agentPubkey);
     } catch (e) {
       if (e instanceof JobGone) {
         log.debug('job gone', { job: job.type, candidate: c.id, why: e.message });
-        return { candidate: c, outcome: 'gone' };
+        this.maybeLookupWinner(job, c, timing);
+        return { candidate: c, outcome: 'gone', reason: 'gone_before_sim' };
       }
       log.warn('build failed', { job: job.type, candidate: c.id, error: String(e) });
-      return { candidate: c, outcome: 'error' };
+      return { candidate: c, outcome: 'error', reason: 'build_error' };
     }
 
     let est: Awaited<ReturnType<Executor['estimateProfit']>>;
@@ -256,52 +274,77 @@ export class Executor {
       est = await this.estimateProfit(built);
     } catch (e) {
       log.warn('simulation failed to run', { job: job.type, candidate: c.id, error: String(e) });
-      return { candidate: c, outcome: 'error' };
+      return { candidate: c, outcome: 'error', reason: 'rpc_error' };
     }
+    timing = { ...timing, simulatedMs: Date.now() };
     const { decision, sim, tx } = est;
     built = est.built;
     const base = {
       jobType: job.type, candidateId: c.id, mode: this.cfg.mode, verdict: decision.verdict, reason: decision.reason,
       simNetLamports: decision.netLamports, simGrossLamports: decision.grossRewardLamports, simCostLamports: decision.costLamports,
-      expectedRewardLamports: built.expectedRewardLamports, unitsConsumed: sim?.unitsConsumed,
+      expectedRewardLamports: built.expectedRewardLamports, unitsConsumed: sim?.unitsConsumed, timing,
     } as const;
 
     if (decision.verdict === 'anomaly') {
-      this.ledger.recordAttempt({ ...base, outcome: 'anomaly' });
+      this.ledger.recordAttempt({ ...base, outcome: 'anomaly', reasonCode: 'anomaly' });
       log.warn('ANOMALY — not executing', { job: job.type, candidate: c.id, reason: decision.reason });
       await this.notifier.alert(
         `🚨 Anomaly guard: ${job.protocol} ${c.description}\n${decision.reason}\nNot executed. Logs:\n${(sim?.logs ?? []).slice(-8).join('\n')}`);
-      return { candidate: c, decision, outcome: 'anomaly' };
+      return { candidate: c, decision, outcome: 'anomaly', reason: 'anomaly' };
     }
 
     if (!decision.ok || !tx) {
-      // Simulation failures are mostly "someone else got there first"; only log them at debug.
-      if (decision.verdict !== 'simulation_failed') this.ledger.recordAttempt({ ...base, outcome: 'rejected' });
-      log.debug('rejected', { job: job.type, candidate: c.id, verdict: decision.verdict, reason: decision.reason });
-      return { candidate: c, decision, outcome: 'rejected' };
+      const reason: ReasonCode = decision.verdict === 'simulation_failed'
+        ? (sim && job.failureReason?.(sim)) ?? (sim ? genericFailureReason(sim) : 'sim_failed_other')
+        : decision.verdict === 'below_min_profit' ? 'unprofitable'
+        : decision.verdict === 'over_job_spend_cap' ? 'over_spend_cap'
+        : 'unknown_balance';
+      // Failed simulations are counted in the funnel only (thousands a day); the rest keep a row with gross and cost.
+      if (decision.verdict !== 'simulation_failed') this.ledger.recordAttempt({ ...base, outcome: 'rejected', reasonCode: reason });
+      else if (reason === 'taken_by_others') this.maybeLookupWinner(job, c, timing);
+      log.debug('rejected', { job: job.type, candidate: c.id, verdict: decision.verdict, reason: decision.reason, code: reason });
+      return { candidate: c, decision, outcome: 'rejected', reason };
     }
 
     const approved = this.ledger.jobTypeStatus(job.type) === 'approved';
     if (this.cfg.mode === 'shadow' || !approved || !this.cfg.agentKeypair) {
-      this.ledger.recordAttempt({ ...base, mode: 'shadow', outcome: 'shadow' });
+      const reason: ReasonCode = approved ? 'shadow' : 'unapproved';
+      this.ledger.recordAttempt({ ...base, mode: 'shadow', outcome: 'shadow', reasonCode: reason });
       log.info('shadow: would earn', { job: job.type, candidate: c.id, net: decision.netLamports, why: approved ? 'shadow mode' : 'job type not approved' });
-      return { candidate: c, decision, outcome: 'shadow' };
+      return { candidate: c, decision, outcome: 'shadow', reason };
     }
 
     if (this.inFlight >= MAX_IN_FLIGHT) {
       log.debug('too many transactions awaiting confirmation; will retry', { job: job.type, candidate: c.id });
-      return { candidate: c, decision, outcome: 'blocked' };
+      return { candidate: c, decision, outcome: 'blocked', reason: 'in_flight_limit' };
     }
     const balance = await this.walletLamports();
     const wasPaused = this.guard.state().paused;
     const block = this.guard.checkBeforeSend(balance);
     if (block) {
-      this.ledger.recordAttempt({ ...base, outcome: 'skipped', reason: block });
+      this.ledger.recordAttempt({ ...base, outcome: 'skipped', reason: block, reasonCode: 'cap_blocked' });
       if (!wasPaused) await this.notifier.alert(`⏸️ Crumbs paused: ${block}`);
-      return { candidate: c, decision, outcome: 'blocked' };
+      return { candidate: c, decision, outcome: 'blocked', reason: 'cap_blocked' };
     }
 
     return this.send(job, c, built, decision, tx, this.cfg.agentKeypair, base);
+  }
+
+  /** Who beat us? Read from the chain, sampled (one lookup a minute) to save RPC credits. */
+  private maybeLookupWinner(job: Job, c: Candidate, timing: AttemptTiming, attemptId?: number, ours?: string, force = false): void {
+    if (!this.opts.raceAnalysis || !job.whoTookIt) return;
+    if (!force && Date.now() - this.lastWinnerLookup < WINNER_LOOKUP_EVERY_MS) return;
+    this.lastWinnerLookup = Date.now();
+    void job.whoTookIt(c, ours).then(w => {
+      if (!w) return;
+      // Pre-send losses have no row yet: keep one per sampled race so the report can show who wins and how fast.
+      const id = attemptId ?? this.ledger.recordAttempt({
+        jobType: job.type, candidateId: c.id, mode: this.cfg.mode, outcome: 'rejected', reasonCode: 'taken_by_others',
+        reason: 'sampled race: someone else did it first', timing,
+      });
+      this.ledger.setWinner(id, w);
+      log.debug('race winner', { job: job.type, candidate: c.id, winner: w.signer, slot: w.slot });
+    }).catch(e => log.debug('winner lookup failed', { error: String(e) }));
   }
 
   private async send(job: Job, c: Candidate, built: BuiltJob, decision: ProfitDecision, tx: VersionedTransaction, signer: Keypair,
@@ -318,47 +361,61 @@ export class Executor {
       }
     } catch (e) {
       log.warn('send failed', { job: job.type, candidate: c.id, error: String(e) });
-      return { candidate: c, decision, outcome: 'error' };
+      return { candidate: c, decision, outcome: 'error', reason: 'send_error' };
     }
-    const id = this.ledger.recordAttempt({ ...base, outcome: 'sent', signature });
+    const id = this.ledger.recordAttempt({ ...base, outcome: 'sent', signature, timing: { ...base.timing, sentMs: Date.now() } });
     log.info('sent', { job: job.type, candidate: c.id, signature, expectedNet: decision.netLamports });
     this.balance = undefined; // our balance is about to change
 
     if (this.opts.backgroundSettle) {
       // Don't make the next job wait 1-2s for this confirmation.
       this.inFlight++;
-      void this.settle(job, built, tx, bh.lastValidBlockHeight, signature, id)
+      void this.settle(job, c, built, decision, tx, bh.lastValidBlockHeight, signature, id)
         .catch(e => log.warn('settling failed', { signature, error: String(e) }))
         .finally(() => { this.inFlight--; });
       return { candidate: c, decision, outcome: 'sent', signature };
     }
-    const outcome = await this.settle(job, built, tx, bh.lastValidBlockHeight, signature, id);
+    const outcome = await this.settle(job, c, built, decision, tx, bh.lastValidBlockHeight, signature, id);
     return { candidate: c, decision, outcome, signature };
   }
 
   /** Wait for the chain's verdict, book the real P&L and check the caps. */
-  private async settle(job: Job, built: BuiltJob, tx: VersionedTransaction, lastValidBlockHeight: number, signature: string, id: number): Promise<'landed' | 'failed' | 'dropped'> {
+  private async settle(job: Job, c: Candidate, built: BuiltJob, decision: ProfitDecision, tx: VersionedTransaction, lastValidBlockHeight: number, signature: string, id: number): Promise<'landed' | 'failed' | 'dropped'> {
+    const counted = (reason: ReasonCode) => this.ledger.countReason(job.type, reason, funnelAmounts(reason, decision, this.cfg.caps.minProfitLamports));
     let landedOk = false;
     if (this.opts.jito) {
       const status = await this.awaitSignature(signature, lastValidBlockHeight);
       if (status === 'dropped') {
-        // Jito didn't include the bundle (someone was faster, or a higher tip won): nothing was charged.
-        this.ledger.settleAttempt(id, 'dropped', 0n, 'bundle not included: lost race or outbid, no fee charged');
+        // Jito didn't include the bundle: nothing was charged. Was the work done by someone else, or still there?
+        const stillThere = await job.stillAvailable?.(c).catch(() => undefined);
+        const reason: ReasonCode = stillThere === true ? 'not_included' : 'lost_race';
+        this.ledger.settleAttempt(id, 'dropped', 0n,
+          reason === 'lost_race' ? 'lost race: someone else did it first, no fee charged' : 'bundle not included (outbid or late), job still open, no fee charged', reason);
+        counted(reason);
+        if (reason === 'lost_race') this.maybeLookupWinner(job, c, {}, id, signature, true);
         this.stats.gone++;
-        log.info('dropped (no fee)', { job: job.type, signature });
+        log.info('dropped (no fee)', { job: job.type, signature, reason });
         return 'dropped';
       }
-      landedOk = status === 'landed';
+      landedOk = status.status === 'landed';
+      if (status.slot) {
+        const t = await this.conn.getBlockTime(status.slot).catch(() => null);
+        this.ledger.setLanded(id, status.slot, t ? t * 1000 : undefined);
+      }
     } else try {
       const conf = await this.conn.confirmTransaction({ signature, blockhash: tx.message.recentBlockhash, lastValidBlockHeight }, 'confirmed');
       landedOk = conf.value.err === null;
+      this.ledger.setLanded(id, conf.context.slot, Date.now());
     } catch (e) {
       log.warn('confirmation failed', { signature, error: String(e) });
     }
 
     const realized = await this.realizedNet(signature, this.cfg.agentPubkey, built);
     const outcome = landedOk ? 'landed' : 'failed';
-    this.ledger.settleAttempt(id, outcome, realized.net, landedOk ? undefined : 'lost race or failed on-chain');
+    const reason: ReasonCode = landedOk ? 'landed' : 'failed_onchain';
+    this.ledger.settleAttempt(id, outcome, realized.net, landedOk ? undefined : 'landed but failed (fee charged): lost race or failed on-chain', reason);
+    counted(reason);
+    if (!landedOk) this.maybeLookupWinner(job, c, {}, id, signature, true);
     log.info(outcome, { job: job.type, signature, realizedNet: realized.net });
 
     const breach = this.guard.checkAfterSend(realized.net, realized.fee);
@@ -367,11 +424,11 @@ export class Executor {
   }
 
   /** Poll for a signature until it confirms or its blockhash expires (then it can never land). */
-  private async awaitSignature(signature: string, lastValidBlockHeight: number): Promise<'landed' | 'failed' | 'dropped'> {
+  private async awaitSignature(signature: string, lastValidBlockHeight: number): Promise<{ status: 'landed' | 'failed'; slot?: number } | 'dropped'> {
     for (let i = 0; i < 45; i++) {
       const { value } = await this.conn.getSignatureStatuses([signature]);
       const s = value[0];
-      if (s && (s.confirmationStatus === 'confirmed' || s.confirmationStatus === 'finalized')) return s.err ? 'failed' : 'landed';
+      if (s && (s.confirmationStatus === 'confirmed' || s.confirmationStatus === 'finalized')) return { status: s.err ? 'failed' : 'landed', slot: s.slot };
       if (await this.conn.getBlockHeight('confirmed') > lastValidBlockHeight) return 'dropped';
       await new Promise(r => setTimeout(r, this.opts.jitoPollMs ?? 2000));
     }
@@ -413,3 +470,11 @@ export class Executor {
   }
 }
 
+/** What a reason adds to the funnel's sums: gross and cost when simulated, and the shortfall for unprofitable jobs. */
+export function funnelAmounts(reason: ReasonCode, d: ProfitDecision | undefined, minProfit: bigint): { gross?: bigint; cost?: bigint; shortfall?: bigint } {
+  if (!d || d.verdict === 'simulation_failed') return {};
+  return {
+    gross: d.grossRewardLamports, cost: d.costLamports,
+    shortfall: reason === 'unprofitable' && d.netLamports < minProfit ? minProfit - d.netLamports : undefined,
+  };
+}

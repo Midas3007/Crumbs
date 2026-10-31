@@ -1,9 +1,27 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import type { RaceWinner, ReasonCode } from './types.js';
 
 export type JobTypeStatus = 'pending' | 'approved' | 'rejected';
-export type AttemptOutcome = 'shadow' | 'sent' | 'landed' | 'failed' | 'rejected' | 'anomaly' | 'skipped';
+export type AttemptOutcome = 'shadow' | 'sent' | 'landed' | 'failed' | 'dropped' | 'rejected' | 'anomaly' | 'skipped';
+
+/** Per-job timestamps in ms. `visibleMs` is when the work became callable (e.g. a task's due time). */
+export interface AttemptTiming {
+  visibleMs?: number;
+  detectedMs?: number;
+  simulatedMs?: number;
+  sentMs?: number;
+}
+
+export interface FunnelRow {
+  reason: ReasonCode;
+  n: number;
+  grossLamports: bigint;
+  costLamports: bigint;
+  /** For 'unprofitable': how far below the minimum profit, summed. */
+  shortfallLamports: bigint;
+}
 
 export interface AttemptRecord {
   jobType: string;
@@ -19,6 +37,8 @@ export interface AttemptRecord {
   unitsConsumed?: number;
   signature?: string;
   realizedNetLamports?: bigint;
+  reasonCode?: ReasonCode;
+  timing?: AttemptTiming;
 }
 
 export interface DaySummary {
@@ -102,6 +122,16 @@ CREATE TABLE IF NOT EXISTS discoveries (
   updated_at INTEGER NOT NULL,
   UNIQUE(program_id, instruction)
 );
+CREATE TABLE IF NOT EXISTS funnel (
+  day TEXT NOT NULL,
+  job_type TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  n INTEGER NOT NULL DEFAULT 0,
+  gross_sum INTEGER NOT NULL DEFAULT 0,
+  cost_sum INTEGER NOT NULL DEFAULT 0,
+  shortfall_sum INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, job_type, reason)
+);
 CREATE TABLE IF NOT EXISTS state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -120,6 +150,68 @@ export class Ledger {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Columns added after the first release; added in place so existing history is kept. */
+  private migrate() {
+    const have = new Set((this.db.prepare('PRAGMA table_info(attempts)').all() as { name: string }[]).map(c => c.name));
+    const add: [string, string][] = [
+      ['reason_code', 'TEXT'], ['visible_ms', 'INTEGER'], ['detected_ms', 'INTEGER'], ['simulated_ms', 'INTEGER'], ['sent_ms', 'INTEGER'],
+      ['landed_slot', 'INTEGER'], ['landed_ms', 'INTEGER'],
+      ['winner_sig', 'TEXT'], ['winner_signer', 'TEXT'], ['winner_slot', 'INTEGER'], ['winner_ms', 'INTEGER'],
+    ];
+    for (const [name, type] of add) if (!have.has(name)) this.db.exec(`ALTER TABLE attempts ADD COLUMN ${name} ${type}`);
+  }
+
+  /** Count one candidate's end state in the funnel (cheap: one row per day, job type and reason). */
+  countReason(jobType: string, reason: ReasonCode, amounts: { gross?: bigint; cost?: bigint; shortfall?: bigint } = {}): void {
+    this.db.prepare(`INSERT INTO funnel (day, job_type, reason, n, gross_sum, cost_sum, shortfall_sum) VALUES (?, ?, ?, 1, ?, ?, ?)
+      ON CONFLICT(day, job_type, reason) DO UPDATE SET n = n + 1, gross_sum = gross_sum + excluded.gross_sum,
+        cost_sum = cost_sum + excluded.cost_sum, shortfall_sum = shortfall_sum + excluded.shortfall_sum`)
+      .run(utcDay(this.now()), jobType, reason, amounts.gross ?? 0n, amounts.cost ?? 0n, amounts.shortfall ?? 0n);
+  }
+
+  /** Funnel totals by reason, from `sinceDay` (inclusive) or all time. */
+  funnel(sinceDay?: string, jobType?: string): FunnelRow[] {
+    const rows = this.db.prepare(`SELECT reason, SUM(n) AS n, SUM(gross_sum) AS g, SUM(cost_sum) AS c, SUM(shortfall_sum) AS s
+      FROM funnel WHERE day >= ? AND (? IS NULL OR job_type = ?) GROUP BY reason ORDER BY SUM(n) DESC`)
+      .all(sinceDay ?? '', jobType ?? null, jobType ?? null) as Record<string, string | number | bigint | null>[];
+    return rows.map(r => ({ reason: String(r.reason) as ReasonCode, n: Number(r.n ?? 0), grossLamports: big(r.g), costLamports: big(r.c), shortfallLamports: big(r.s) }));
+  }
+
+  /**
+   * Of the jobs rejected as unprofitable alone, how many would clear the minimum if `sharedLamports`
+   * of their cost (base fee + tip) were shared with other tasks in one transaction.
+   */
+  batchingPotential(sharedLamports: bigint, minProfit: bigint): { unprofitable: number; rescuable: number } {
+    const r = this.db.prepare(`SELECT COUNT(*) AS n,
+        SUM(CASE WHEN sim_gross - (sim_cost - ?) >= ? THEN 1 ELSE 0 END) AS ok
+      FROM attempts WHERE reason_code = 'unprofitable'`).get(sharedLamports, minProfit) as Record<string, number | bigint | null>;
+    return { unprofitable: Number(r.n ?? 0), rescuable: Number(r.ok ?? 0) };
+  }
+
+  /** Record when a sent transaction landed (slot and block time). */
+  setLanded(id: number, slot: number, ms: number | undefined): void {
+    this.db.prepare('UPDATE attempts SET landed_slot = ?, landed_ms = ? WHERE id = ?').run(slot, ms ?? null, id);
+  }
+
+  /** Record who beat us to a job. */
+  setWinner(id: number, w: RaceWinner): void {
+    this.db.prepare('UPDATE attempts SET winner_sig = ?, winner_signer = ?, winner_slot = ?, winner_ms = ? WHERE id = ?')
+      .run(w.signature, w.signer, w.slot, w.blockTimeMs ?? null, id);
+  }
+
+  /** Per-attempt timings for sent and profitable jobs, newest first (for the latency report). */
+  timings(limit = 2000, sinceMs = 0): { reasonCode: string | null; visibleMs: number | null; detectedMs: number | null; simulatedMs: number | null; sentMs: number | null; landedMs: number | null; winnerMs: number | null; winnerSigner: string | null }[] {
+    const rows = this.db.prepare(`SELECT reason_code, visible_ms, detected_ms, simulated_ms, sent_ms, landed_ms, winner_ms, winner_signer
+      FROM attempts WHERE detected_ms IS NOT NULL AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(sinceMs, limit) as Record<string, string | number | null>[];
+    const n = (v: string | number | null) => (v === null ? null : Number(v));
+    return rows.map(r => ({
+      reasonCode: r.reason_code === null ? null : String(r.reason_code), visibleMs: n(r.visible_ms), detectedMs: n(r.detected_ms),
+      simulatedMs: n(r.simulated_ms), sentMs: n(r.sent_ms), landedMs: n(r.landed_ms), winnerMs: n(r.winner_ms),
+      winnerSigner: r.winner_signer === null ? null : String(r.winner_signer),
+    }));
   }
 
   registerJobType(type: string, protocol: string, description: string, rewardSource: string): { isNew: boolean; status: JobTypeStatus } {
@@ -147,18 +239,20 @@ export class Ledger {
   recordAttempt(a: AttemptRecord): number {
     const ts = this.now();
     const r = this.db.prepare(`INSERT INTO attempts
-      (ts, day, job_type, candidate_id, mode, outcome, verdict, reason, sim_net, sim_gross, sim_cost, expected_reward, units, signature, realized_net)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      (ts, day, job_type, candidate_id, mode, outcome, verdict, reason, sim_net, sim_gross, sim_cost, expected_reward, units, signature, realized_net,
+       reason_code, visible_ms, detected_ms, simulated_ms, sent_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       ts, utcDay(ts), a.jobType, a.candidateId, a.mode, a.outcome, a.verdict ?? null, a.reason ?? null,
       a.simNetLamports ?? null, a.simGrossLamports ?? null, a.simCostLamports ?? null, a.expectedRewardLamports ?? null,
-      a.unitsConsumed ?? null, a.signature ?? null, a.realizedNetLamports ?? null);
+      a.unitsConsumed ?? null, a.signature ?? null, a.realizedNetLamports ?? null,
+      a.reasonCode ?? null, a.timing?.visibleMs ?? null, a.timing?.detectedMs ?? null, a.timing?.simulatedMs ?? null, a.timing?.sentMs ?? null);
     return Number(r.lastInsertRowid);
   }
 
   /** Fill in the on-chain result of a sent attempt. */
-  settleAttempt(id: number, outcome: 'landed' | 'failed' | 'dropped', realizedNetLamports: bigint, reason?: string): void {
-    this.db.prepare('UPDATE attempts SET outcome = ?, realized_net = ?, reason = COALESCE(?, reason) WHERE id = ?')
-      .run(outcome, realizedNetLamports, reason ?? null, id);
+  settleAttempt(id: number, outcome: 'landed' | 'failed' | 'dropped', realizedNetLamports: bigint, reason?: string, reasonCode?: ReasonCode): void {
+    this.db.prepare('UPDATE attempts SET outcome = ?, realized_net = ?, reason = COALESCE(?, reason), reason_code = COALESCE(?, reason_code) WHERE id = ?')
+      .run(outcome, realizedNetLamports, reason ?? null, reasonCode ?? null, id);
   }
 
   /** When did we last try this candidate? Used to avoid hammering the same job. */

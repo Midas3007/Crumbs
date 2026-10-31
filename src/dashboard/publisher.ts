@@ -36,6 +36,8 @@ export class Publisher {
       mode: this.cfg.mode, paused: { paused: state.paused, reason: state.reason },
       wallet: this.cfg.agentPubkey.toBase58(), solLamports: BigInt(lamports), usdc, solUsd: this.solUsd,
       activity: this.activity?.(),
+      sharedCostLamports: 5_000n + (this.cfg.jito.enabled ? this.cfg.jito.tipLamports : 0n),
+      minProfitLamports: this.cfg.caps.minProfitLamports,
     });
     this.latest = snap;
 

@@ -1,7 +1,7 @@
 {
   "name": "crumbs",
   "version": "0.1.0",
-  "description": "Autonomous Solana agent that earns the small, permissionless keeper rewards big bots ignore — profit proven by simulation before every action.",
+  "description": "Autonomous Solana agent that earns the small, permissionless keeper rewards big bots ignore \u2014 profit proven by simulation before every action.",
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --max-old-space-size=384 dist/src/index.js",
     "dev": "tsx --disable-warning=ExperimentalWarning src/index.ts",
@@ -16,7 +16,8 @@
     "export-key": "tsx scripts/export-key.ts",
     "validate-ix": "tsx --disable-warning=ExperimentalWarning scripts/validate-ix.ts",
     "discover": "tsx --disable-warning=ExperimentalWarning scripts/discover.ts",
-    "telegram-setup": "tsx --disable-warning=ExperimentalWarning scripts/telegram-setup.ts"
+    "telegram-setup": "tsx --disable-warning=ExperimentalWarning scripts/telegram-setup.ts",
+    "report": "tsx --disable-warning=ExperimentalWarning scripts/report.ts"
   },
   "repository": {
     "type": "git",

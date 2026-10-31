@@ -30,7 +30,78 @@ export interface Snapshot {
   discoveries: { id: number; program: string; programName: string; instruction: string; status: string; confidence: number; summary: string; foundAt: string }[];
   /** Work done since the agent last started — shows it's busy even on days nothing pays. */
   activity?: { since: string; checks: number; looked: number; profitable: number; sent: number; takenByOthers: number; notWorthIt: number; anomalies: number; errors: number };
+  /** Every candidate's end state by reason code (counted per try), all time and today. Lamport sums as strings. */
+  funnel?: { allTime: FunnelEntry[]; today: FunnelEntry[] };
+  /** Median per-job timings (ms) and who wins the races we lose. */
+  latency?: LatencyStats;
+  /** Unprofitable-alone jobs that would clear the minimum if base fee + tip were shared in a batch. */
+  batchingPotential?: { unprofitable: number; rescuable: number };
 }
+
+/** Which funnel stage each reason drops out at (or ends in). */
+export const REASON_STAGE: Record<string, 'before_sim' | 'sim_failed' | 'not_worth_it' | 'not_sent' | 'sent'> = {
+  gone_before_sim: 'before_sim', build_error: 'before_sim', rpc_error: 'before_sim',
+  taken_by_others: 'sim_failed', not_ready: 'sim_failed', task_failing: 'sim_failed', sim_failed_other: 'sim_failed',
+  unprofitable: 'not_worth_it', over_spend_cap: 'not_worth_it', unknown_balance: 'not_worth_it', anomaly: 'not_worth_it',
+  shadow: 'not_sent', unapproved: 'not_sent', in_flight_limit: 'not_sent', cap_blocked: 'not_sent', send_error: 'not_sent',
+  landed: 'sent', failed_onchain: 'sent', lost_race: 'sent', not_included: 'sent',
+};
+
+/** checks → looked at → simulated → simulated OK → profitable → sent → landed, from reason counts. */
+export function funnelStages(entries: { reason: string; n: number }[]) {
+  const by = (stage: string) => entries.filter(e => REASON_STAGE[e.reason] === stage).reduce((n, e) => n + e.n, 0);
+  const looked = entries.reduce((n, e) => n + e.n, 0);
+  const simulated = looked - by('before_sim');
+  const simOk = simulated - by('sim_failed');
+  const profitable = simOk - by('not_worth_it');
+  const sent = profitable - by('not_sent');
+  const landed = entries.find(e => e.reason === 'landed')?.n ?? 0;
+  return { looked, simulated, simOk, profitable, sent, landed };
+}
+
+export interface FunnelEntry { reason: string; n: number; grossLamports: string; costLamports: string; shortfallLamports: string }
+
+export interface LatencyStats {
+  samples: number;
+  /** Medians in ms; null when there's no sample yet. */
+  detectAfterVisible: number | null;
+  simulate: number | null;
+  send: number | null;
+  sentAfterVisible: number | null;
+  /** Block time has 1s resolution, so these are rough. */
+  landedAfterVisible: number | null;
+  winnerAfterVisible: number | null;
+  /** Who beat us, most frequent first. */
+  winners: { signer: string; n: number }[];
+}
+
+export function median(xs: number[]): number | null {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return Math.round(s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2);
+}
+
+export function latencyStats(rows: ReturnType<Ledger['timings']>): LatencyStats {
+  const diff = (a: (r: typeof rows[number]) => number | null, b: (r: typeof rows[number]) => number | null) =>
+    median(rows.flatMap(r => { const x = a(r); const y = b(r); return x !== null && y !== null ? [x - y] : []; }));
+  const counts = new Map<string, number>();
+  for (const r of rows) if (r.winnerSigner) counts.set(r.winnerSigner, (counts.get(r.winnerSigner) ?? 0) + 1);
+  return {
+    samples: rows.length,
+    detectAfterVisible: diff(r => r.detectedMs, r => r.visibleMs),
+    simulate: diff(r => r.simulatedMs, r => r.detectedMs),
+    send: diff(r => r.sentMs, r => r.simulatedMs),
+    sentAfterVisible: diff(r => r.sentMs, r => r.visibleMs),
+    landedAfterVisible: diff(r => r.landedMs, r => r.visibleMs),
+    winnerAfterVisible: diff(r => r.winnerMs, r => r.visibleMs),
+    winners: [...counts].map(([signer, n]) => ({ signer, n })).sort((a, b) => b.n - a.n).slice(0, 5),
+  };
+}
+
+const funnelEntries = (rows: ReturnType<Ledger['funnel']>): FunnelEntry[] => rows.map(r => ({
+  reason: r.reason, n: r.n, grossLamports: r.grossLamports.toString(), costLamports: r.costLamports.toString(), shortfallLamports: r.shortfallLamports.toString(),
+}));
 
 export interface SnapshotInputs {
   mode: 'shadow' | 'live';
@@ -41,6 +112,9 @@ export interface SnapshotInputs {
   solUsd: number | null;
   now?: Date;
   activity?: Snapshot['activity'];
+  /** Per-transaction cost a batch would share (base fee + tip), for the batching estimate. */
+  sharedCostLamports?: bigint;
+  minProfitLamports?: bigint;
 }
 
 export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
@@ -84,6 +158,10 @@ export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
       confidence: x.confidence, summary: x.summary, foundAt: new Date(x.created_at).toISOString(),
     })),
     activity: i.activity,
+    funnel: { allTime: funnelEntries(ledger.funnel()), today: funnelEntries(ledger.funnel(d.day)) },
+    latency: latencyStats(ledger.timings()),
+    batchingPotential: i.sharedCostLamports !== undefined && i.minProfitLamports !== undefined
+      ? ledger.batchingPotential(i.sharedCostLamports, i.minProfitLamports) : undefined,
   };
 }
 

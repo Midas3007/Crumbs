@@ -82,6 +82,17 @@
 - Our niche: **stuck tasks.** Tasks that fail (e.g. a fanout claim whose receiver has no token account) become *stale* after the queue's `stale_task_age` (48h on `hpl-crons`/`fanout-queue`). `run_task_v0` then pays the reward without executing the inner instructions. Crumbs retries stuck tasks every 60s and will collect when they turn stale.
 - OpenBook v2 `consume_events`: no caller reward (the penalty goes to the market). Rejected.
 
+## v2 upgrade — Milestone 0: measure first (Oct 31)
+
+- Every candidate now ends with exactly one **reason code** (`ReasonCode` in `src/core/types.ts`), counted per day and job type in a new `funnel` table with gross, cost and (for unprofitable jobs) shortfall sums. Stages: tries → simulated → simulated OK → profitable → sent → landed.
+- Failed simulations are split: `gone_before_sim`, `taken_by_others`, `not_ready` (TukTuk TaskNotReady, 6005), `task_failing` (a stuck task's inner program fails), `sim_failed_other`. Checked against real mainnet simulations: TukTuk passes an inner program's error code on unchanged (a stuck fanout task fails with 3012, the same number as a task someone already ran), so the reason is read from *which program* failed first.
+- Profitable but not sent: `shadow`, `unapproved`, `in_flight_limit`, `cap_blocked`, `send_error`. Sent: `landed`, `failed_onchain`, `lost_race` (bundle dropped and the task is gone), `not_included` (bundle dropped while the task is still open: outbid or late).
+- Per-job timestamps: callable (due time) → picked up → simulated → sent → landed (slot and block time). For lost races the winner's transaction, signer and slot are read from the chain (verified to be a `run_task_v0` on that task, since task addresses are reused), at most once a minute for pre-send losses to save Helius credits. Our Oct 30 lost race: Helium's `BcS9…YdYRM` ran the task in the same slot, earlier in the block.
+- Batching potential: how many unprofitable-alone jobs would clear the minimum if the base fee and tip were shared.
+- The snapshot carries `funnel`, `latency` and `batchingPotential`; `npm run report -- <name>` turns the public snapshot into `reports/<name>.md`.
+- Likely cause of "13 profitable vs 7 sent" to confirm in the baseline: dropped Jito bundles wait up to ~60-90s for their blockhash to expire while holding one of the 3 in-flight slots, so profitable jobs meanwhile were held back (now `in_flight_limit`).
+- Existing databases are migrated in place (new columns added; history kept). 86 tests.
+
 ## Next
 
 - First full discovery pass with Claude over the seed programs (needs ANTHROPIC_API_KEY).

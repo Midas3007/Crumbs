@@ -9,9 +9,9 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 import { log } from '../../core/logger.js';
-import { type BuiltJob, type Candidate, type Job, JobGone } from '../../core/types.js';
+import { type BuiltJob, type Candidate, type Job, JobGone, type RaceWinner, type ReasonCode, type SimOutcome } from '../../core/types.js';
 import {
-  decodeTask, decodeTaskHeader, decodeTaskQueue, encodeRunTaskV0, nextAvailableTaskIds,
+  decodeTask, decodeTaskHeader, decodeTaskQueue, encodeRunTaskV0, nextAvailableTaskIds, RUN_TASK_V0_DISCRIMINATOR,
   type Task, TASK_DISCRIMINATOR, TASK_HEADER_LEN, type TaskHeader, type TaskQueue, taskAddress, TUKTUK_PROGRAM_ID,
 } from './layout.js';
 
@@ -45,6 +45,26 @@ const RECHECK_SEC = 600;
 const STALE_AIM_WINDOW_SEC = 120;
 /** Queues with absurd stale ages (e.g. u32::MAX) never turn stale in practice. */
 const MAX_STALE_AGE_SEC = 30 * 86_400;
+/** TukTuk error codes (programs/tuktuk/src/error.rs; Anchor numbers them from 6000) and Anchor's own. */
+const ERR_TASK_NOT_READY = 6005;
+const ERR_TASK_NOT_QUEUED = 6032;
+const ANCHOR_ACCOUNT_NOT_INITIALIZED = 3012;
+
+/**
+ * Why a run_task simulation failed, from its logs: the task isn't due yet, someone already ran it,
+ * or the task's own instruction fails (a stuck task, which only pays once it turns stale).
+ */
+export function tuktukFailureReason(sim: Pick<SimOutcome, 'err' | 'logs'>): ReasonCode | undefined {
+  const tuktuk = TUKTUK_PROGRAM_ID.toBase58();
+  // The first "failed" line is the innermost program. TukTuk passes an inner error code on unchanged
+  // (a stuck fanout task fails with 3012 just like a task someone already ran), so who failed matters.
+  const innermost = sim.logs.map(l => /^Program (\w+) failed/.exec(l)?.[1]).find(Boolean);
+  const custom = (sim.err as { InstructionError?: [number, { Custom?: number }] } | null)?.InstructionError?.[1]?.Custom;
+  if (innermost && innermost !== tuktuk && sim.logs.some(l => l.startsWith(`Program ${tuktuk} invoke`))) return 'task_failing';
+  if (custom === ERR_TASK_NOT_READY) return 'not_ready';
+  if (custom === ANCHOR_ACCOUNT_NOT_INITIALIZED || custom === ERR_TASK_NOT_QUEUED) return 'taken_by_others';
+  return undefined;
+}
 
 /**
  * Helium TukTuk: a permissionless crank queue. `run_task_v0` pays the task's `crank_reward`
@@ -165,6 +185,35 @@ export class TuktukJob implements Job {
       .slice(0, this.opts.maxPerTick ?? 25);
     for (const { t, f } of ready) if (f.kind === 'recheck') this.lastRecheck.set(t.address.toBase58(), nowSec);
     return ready.map(({ c }) => c);
+  }
+
+  failureReason(sim: SimOutcome): ReasonCode | undefined {
+    return tuktukFailureReason(sim);
+  }
+
+  async stillAvailable(c: Candidate): Promise<boolean> {
+    return (await this.conn.getAccountInfo(new PublicKey((c.data as { task: string }).task), 'confirmed')) !== null;
+  }
+
+  /**
+   * Whoever ran the task: the newest successful run_task_v0 on this task account that isn't ours.
+   * Task addresses are reused (queue + id), so each hit is checked to really be a run of this task.
+   */
+  async whoTookIt(c: Candidate, ours?: string): Promise<RaceWinner | undefined> {
+    const task = new PublicKey((c.data as { task: string }).task);
+    const sigs = await this.conn.getSignaturesForAddress(task, { limit: 5 }, 'confirmed');
+    for (const hit of sigs.filter(x => x.err === null && x.signature !== ours).slice(0, 3)) {
+      const tx = await this.conn.getTransaction(hit.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+      if (!tx?.meta) continue;
+      const keys = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses });
+      const ranIt = tx.transaction.message.compiledInstructions.some(ix =>
+        keys.get(ix.programIdIndex)?.equals(TUKTUK_PROGRAM_ID)
+        && Buffer.from(ix.data).subarray(0, 8).equals(RUN_TASK_V0_DISCRIMINATOR)
+        && keys.get(ix.accountKeyIndexes[3])?.equals(task));
+      if (!ranIt) continue;
+      return { signature: hit.signature, signer: keys.staticAccountKeys[0].toBase58(), slot: hit.slot, blockTimeMs: hit.blockTime ? hit.blockTime * 1000 : undefined };
+    }
+    return undefined;
   }
 
   /** Remove a task from the local schedule once it's been handled or found gone. */

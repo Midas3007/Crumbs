@@ -53,6 +53,7 @@ async function main() {
 
   const executor = new Executor(conn, cfg, ledger, guard, notifier, jobs, {
     backgroundSettle: true,
+    raceAnalysis: true,
     jito: cfg.jito.enabled ? { client: new JitoClient(cfg.jito.url), tipLamports: cfg.jito.tipLamports } : undefined,
   });
   const publisher = new Publisher(conn, cfg, ledger, guard, 'data/snapshot.json', () => {
