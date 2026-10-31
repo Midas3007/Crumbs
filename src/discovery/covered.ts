@@ -4,6 +4,7 @@
  */
 export const COVERED: Record<string, string> = {
   'tuktukUrfhXT6ZT77QTU8RQtvgL967uRuVagWF57zVA:run_task_v0': 'tuktuk.run_task',
+  'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv:checkpoint': 'ore.checkpoint',
 };
 
 export function coveredBy(programId: string, instruction: string): string | undefined {

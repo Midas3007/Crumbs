@@ -123,6 +123,7 @@ If the Claude API or Helius runs out of credits, you get one Telegram alert (rep
 | Adapter | What it does | Reward | Status |
 |---|---|---|---|
 | `tuktuk.run_task` | Runs due and stuck tasks on [Helium TukTuk](https://github.com/helium/tuktuk) crank queues | The task's `crank_reward` (10,000–15,000 lamports), paid by `run_task_v0` to the caller | ✅ live on mainnet |
+| `ore.checkpoint` | Settles [ORE](https://github.com/regolith-labs/ore) miners who left a round unsettled, 5 per transaction | The miner's 10,000-lamport `checkpoint_fee`, open to anyone in the last 12 h (`checkpoint.rs`) | ✅ live; simulated +25,000 net for 3 ([research](reports/new-job-types.md)) |
 | Drift order filler | Fills Drift auction orders | Filler reward, in USDC | ❌ Drift was exploited and frozen in April 2026; its successor has had no fills |
 | Kamino liquidation | Liquidates with a same-tx flash loan | Liquidation bonus | ❌ researched, not a fit at our size ([report](reports/kamino-liquidations.md)) |
 

@@ -69,6 +69,7 @@ const FEATURE_TEXT: Record<string, string> = {
   adaptive_tip: 'Learn the Jito tip from wins and losses',
   live_tasks: 'New tasks over websocket',
   focus: 'Stop racing tasks we keep losing',
+  'adapter:ore.checkpoint': 'ORE checkpoint bounties',
 };
 
 export default async function Page() {

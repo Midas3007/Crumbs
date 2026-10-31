@@ -154,6 +154,13 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - Stuck-task pool is small: 5 overdue tasks, 2 turning stale in the next 24 h (20,000 lamports).
 - **focus** (feature, on): per kind of task (queue × compiled/remote × due/stale/recheck), a 24 h record of wins and losses. A kind with ≥ 20 losses and no win is skipped (new reason code `skipped_focus`), with one probe every 30 min; any win turns it back on. Saves the Helius credits spent on races the incumbent always wins, and keeps going after remote and stale tasks. The heartbeat log says what's being skipped. 105 tests.
 
+## New job type: ORE checkpoint bounties (Oct 31)
+
+- Research by data, not memory: 100 recent blocks (16,563 transactions), keeping every signer paid more than its fee. Only one permissionless chore stood out: **ORE v3 `checkpoint`**. Everything else was trading, own withdrawals, or permissioned executors. See `reports/new-job-types.md`.
+- Verified in the source (`checkpoint.rs`: anyone may collect a miner's 10,000-lamport fee in the last 12 h before the round expires) and on mainnet: 35,077 miners, ~100 unsettled, 3 expired unclaimed; a simulated 3-checkpoint transaction with our wallet nets +25,000.
+- `src/adapters/ore/adapter.ts`: scans miners every 5 min (two small slices over the public RPC, to save Helius credits), reads each round's expiry, and packs claimable miners 5 per transaction (one base fee and tip), sending a partial batch only within 2 h of expiry. Re-reads miners at build time and drops any settled meanwhile. Its own feature and circuit breaker (`adapter:ore.checkpoint`); auto-approved like any new job type.
+- Expected ~0.0012 SOL/day (~30× TukTuk so far). 110 tests.
+
 ## Next
 
 - Measure a clean v2 window with the tip fix; if Helius credits get tight, stop racing fresh tasks the incumbent always wins.

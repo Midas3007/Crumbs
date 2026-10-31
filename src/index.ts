@@ -1,5 +1,6 @@
 import { Connection } from '@solana/web3.js';
 import { TuktukJob } from './adapters/tuktuk/adapter.js';
+import { OreCheckpointJob } from './adapters/ore/adapter.js';
 import { formatSol, loadConfig } from './config.js';
 import { Guardrails } from './core/caps.js';
 import { ModeSwitch } from './core/mode.js';
@@ -40,6 +41,7 @@ async function main() {
   const v2 = (process.env.V2_FEATURES ?? 'off') === 'on';
   const features = new Features(ledger, [
     { name: 'adapter:tuktuk.run_task', description: 'Helium TukTuk tasks', defaultOn: true },
+    { name: 'adapter:ore.checkpoint', description: 'ORE checkpoint bounties (10,000 lamports per unsettled miner, batched)', defaultOn: true },
     { name: FEATURE.chainClock, description: "fire on the chain's own clock (websocket), not ours", defaultOn: v2 },
     { name: FEATURE.fastRetry, description: 'when "not ready" at the due second, retry every 150 ms', defaultOn: v2 },
     { name: FEATURE.jitoSlots, description: 'free a send slot as soon as a race is lost; up to 10 pending Jito sends', defaultOn: v2 },
@@ -63,6 +65,8 @@ async function main() {
   const jobs: Job[] = [
     new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports, agent: cfg.agentPubkey, prepareSec: 10, liveTasks: () => features.enabled('live_tasks'),
       focus: { enabled: () => features.enabled('focus'), tracker: focus } }),
+    // The big miner listing goes to the public RPC (DISCOVERY_LISTING_RPC_URL) to save Helius credits.
+    new OreCheckpointJob(conn, cfg.discovery.listingRpcUrl),
   ];
 
   let summary = () => '';
