@@ -31,19 +31,14 @@ export const ORE_BATCH = 5;
 /** Stop claiming this close to expiry (a round closing mid-flight just pays nothing). */
 const EXPIRY_MARGIN_SLOTS = 150n;
 /**
- * Bounties stay claimable for 12 h and nobody else seemed to claim them (Oct 31), so wait until a full
- * batch shares one base fee and tip (~8,800 net each instead of ~4,000), unless one is within 2 h of expiry.
+ * Claim as soon as a bounty is claimable, up to 5 per transaction (one base fee and tip for all).
+ * Waiting to fill a batch was tried first, but bounties turned out scarce (often 1 claimable at a time)
+ * and claimable ones disappeared within 2 h (Oct 31): a single claim nets ~4,000, a lost one 0.
  */
-const URGENT_SLOTS = 2n * 60n * 60n * 1000n / 400n;
-
-/** Group claimable miners into batches; send a partial batch only when one of them is about to expire. */
-export function batches<T extends { expiresAt: bigint }>(ready: T[], slot: bigint, size = ORE_BATCH): T[][] {
+export function batches<T extends { expiresAt: bigint }>(ready: T[], _slot: bigint, size = ORE_BATCH): T[][] {
   const sorted = [...ready].sort((a, b) => (a.expiresAt < b.expiresAt ? -1 : a.expiresAt > b.expiresAt ? 1 : 0));
   const out: T[][] = [];
-  for (let i = 0; i < sorted.length; i += size) {
-    const batch = sorted.slice(i, i + size);
-    if (batch.length === size || batch[0].expiresAt - slot <= URGENT_SLOTS) out.push(batch);
-  }
+  for (let i = 0; i < sorted.length; i += size) out.push(sorted.slice(i, i + size));
   return out;
 }
 

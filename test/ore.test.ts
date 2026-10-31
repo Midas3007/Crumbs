@@ -63,13 +63,11 @@ test('ore: build re-reads miners, drops the ones settled meanwhile, and expects 
   await assert.rejects(new OreCheckpointJob(allDone, 'x').build({ ...c, data: [c.data[0]] }, AGENT), JobGone);
 });
 
-test('ore: waits for a full batch of 5 unless one is within 2 h of expiry; most urgent first', () => {
+test('ore: claims straight away, up to 5 per transaction, most urgent first', () => {
   const slot = 1_000_000n;
   const far = (n: number) => Array.from({ length: n }, (_, i) => ({ id: i, expiresAt: slot + 100_000n + BigInt(i) }));
-  assert.equal(batches(far(3), slot).length, 0); // 3 not urgent: wait
-  assert.deepEqual(batches(far(7), slot).map(b => b.length), [5]); // one full batch, 2 wait
-  const urgent = [...far(2), { id: 99, expiresAt: slot + 10_000n }]; // ~67 min left
-  const [b] = batches(urgent, slot);
-  assert.equal(b.length, 3);
+  assert.deepEqual(batches(far(1), slot).map(b => b.length), [1]);
+  assert.deepEqual(batches(far(7), slot).map(b => b.length), [5, 2]);
+  const [b] = batches([...far(2), { id: 99, expiresAt: slot + 10_000n }], slot);
   assert.equal(b[0].id, 99);
 });
