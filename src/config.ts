@@ -53,6 +53,8 @@ export interface Config {
     dailyBudgetUsd: number;
     /** RPC used only to list recently deployed programs (Helius rejects that lookup). */
     listingRpcUrl: string;
+    /** Daily scan of recent blocks for signers being paid to call something (0 = off). Public RPC, no Claude. */
+    paidScanHours: number;
   };
   jito: {
     /** Send through Jito bundles so lost races cost nothing (default on). */
@@ -174,6 +176,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       includeRecentDeploys: bool(env.DISCOVERY_RECENT_DEPLOYS, true),
       dailyBudgetUsd: Number(env.DISCOVERY_DAILY_BUDGET_USD ?? '0.25'),
       listingRpcUrl: env.DISCOVERY_LISTING_RPC_URL || 'https://api.mainnet-beta.solana.com',
+      paidScanHours: Number(env.DISCOVERY_PAID_SCAN_HOURS ?? '24'),
     },
     jito: {
       enabled: bool(env.JITO_ENABLED, true),

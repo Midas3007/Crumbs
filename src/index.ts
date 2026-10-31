@@ -20,6 +20,7 @@ import type { Job } from './core/types.js';
 import { ClaudeClassifier } from './discovery/classify.js';
 import { DiscoveryEngine, replaySpecFromLedger } from './discovery/engine.js';
 import { manualPrograms, recentlyDeployedPrograms } from './discovery/programs.js';
+import { jsonRpc, newGroups, paidScanText, scanPaidChores } from './discovery/paidScan.js';
 import { ReplayJob } from './discovery/replayJob.js';
 import { TelegramNotifier, telegramConfigProblem } from './telegram/bot.js';
 import { priceBook } from './core/prices.js';
@@ -141,10 +142,25 @@ async function main() {
     // Public RPC for the big deploy listing; no automatic 429 retries so a busy RPC doesn't stall discovery.
     const listingConn = new Connection(cfg.discovery.listingRpcUrl, { disableRetryOnRateLimit: true });
     const engine = new DiscoveryEngine(conn, cfg, ledger, notifier, new ClaudeClassifier(cfg.discovery.anthropicApiKey), { credits, dailyBudgetUsd: cfg.discovery.dailyBudgetUsd });
-    const discover = async () => {
+    // One discovery pass at a time (the daily paid-chore scan feeds the same engine).
+    let queue = Promise.resolve();
+    const serial = (f: () => Promise<void>) => (queue = queue.then(f, f));
+    const discover = () => serial(async () => {
       const programs = [...manualPrograms(), ...(cfg.discovery.includeRecentDeploys ? await recentlyDeployedPrograms(listingConn, 40, [conn, listingConn]) : [])];
       await engine.run([...new Set(programs)]);
-    };
+    });
+    if (cfg.discovery.paidScanHours > 0) {
+      // Who is being paid to call what? New programs found this way go through discovery like any other.
+      const paidScan = async () => {
+        const { blocks, groups } = await scanPaidChores(jsonRpc(cfg.discovery.listingRpcUrl));
+        const fresh = newGroups(ledger, groups);
+        log.info('paid-chore scan', { blocks, patterns: groups.length, new: fresh.length });
+        await notifier.alert(paidScanText(blocks, fresh, groups.length));
+        if (fresh.length) await serial(async () => { await engine.run([...new Set(fresh.map(g => g.program))]); });
+      };
+      setTimeout(() => void paidScan().catch(e => log.warn('paid-chore scan failed', { error: String(e) })), 15 * 60_000);
+      timers.push(setInterval(() => void paidScan().catch(e => log.warn('paid-chore scan failed', { error: String(e) })), cfg.discovery.paidScanHours * 3_600_000));
+    }
     setTimeout(() => void discover().catch(e => log.warn('discovery failed', { error: String(e) })), 60_000);
     timers.push(setInterval(() => void discover().catch(e => log.warn('discovery failed', { error: String(e) })), cfg.discovery.intervalHours * 3_600_000));
   } else {

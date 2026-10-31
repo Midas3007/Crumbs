@@ -161,6 +161,12 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - `src/adapters/ore/adapter.ts`: scans miners every 5 min (two small slices over the public RPC, to save Helius credits), reads each round's expiry, and packs claimable miners 5 per transaction (one base fee and tip), sending a partial batch only within 2 h of expiry. Re-reads miners at build time and drops any settled meanwhile. Its own feature and circuit breaker (`adapter:ore.checkpoint`); auto-approved like any new job type.
 - Expected ~0.0012 SOL/day (~30× TukTuk so far). 110 tests.
 
+## Daily paid-chore scan (Oct 31)
+
+- `src/discovery/paidScan.ts`: every 24 h (`DISCOVERY_PAID_SCAN_HOURS`), samples 100 blocks over ~4.5 h on the public RPC (no Helius credits, no Claude), keeps every successful transaction whose signer ended with more SOL (after the fee) without any of its tokens going down, skips trading and launchpad programs, and groups by program and instruction. New patterns (remembered in the ledger) go to Telegram with an example transaction, and their programs go through discovery (Claude classification, then the replay with our wallet), one pass at a time with the regular discovery run.
+- This is how ORE's checkpoint bounty was found. A live trial (30 blocks) reported 7 patterns, mostly game players claiming their own rewards (Star Atlas SAGE, GODL); discovery's checks filter those. Lead to check by hand: GODL (`mineWsRs…`) is an ORE fork and may carry the same checkpoint bounty.
+- 113 tests.
+
 ## Next
 
 - Measure a clean v2 window with the tip fix; if Helius credits get tight, stop racing fresh tasks the incumbent always wins.
