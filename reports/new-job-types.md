@@ -39,3 +39,14 @@ tokens going down (so not a sale or swap). Grouped by program, that's a map of w
 `scratch/paid.ts`-style scan: getBlock with `maxSupportedTransactionVersion: 1` (some blocks already hold version-1
 transactions), payer gain = post − pre + fee, skip payers whose token balances fell. Worth re-running weekly: new
 protocols appear, and discovery's Claude pass only sees programs with a published IDL.
+
+## Daily hunts
+
+### Oct 31, 18:23 UTC: nothing new qualifies
+
+100 blocks, 23 new patterns. Checked by hand:
+- `satRush…` `SettleDeployPublic` / `ExecutePublicAutomation`: the IDL says the signer must be "the crank (round authority)" (or the deployment's owner); the gain is that crank recovering rent it paid itself. Permissioned.
+- Pyth push oracle `UpdatePriceFeed`: the caller gets back the rent of its own encoded VAA (`CloseEncodedVaa`). Not a reward.
+- The rest are players' own actions: games (Star Atlas SAGE, GODL, coin flips, reveals), closing one's own accounts (`CLEAN…`, `CloseAccount`, PumpSwap volume accumulators), cancelling one's own offers, payments (`Send9…`), Mayan solver settlement and Jupiter perps keepers (permissioned), the ORE automation executor (permissioned).
+
+Live: ORE checkpoints 40 landed, 0 lost, +340,000 lamports since 10:17; TukTuk 16 landed in total. Total net +410,512 lamports.
