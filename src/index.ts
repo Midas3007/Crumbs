@@ -4,7 +4,9 @@ import { formatSol, loadConfig } from './config.js';
 import { Guardrails } from './core/caps.js';
 import { ModeSwitch } from './core/mode.js';
 import { Features } from './core/features.js';
-import { Executor } from './core/executor.js';
+import { Executor, FEATURE } from './core/executor.js';
+import { ChainClock } from './core/chainClock.js';
+import { TipTuner } from './core/tipTuner.js';
 import { JitoClient } from './core/jito.js';
 import { BASE_FEE_PER_SIGNATURE } from './core/fees.js';
 import { CreditWatch, creditWatchingFetch } from './core/creditWatch.js';
@@ -33,12 +35,22 @@ async function main() {
   const credits = new CreditWatch(t => notifier.alert(t));
   const conn = new Connection(cfg.rpcUrl, { commitment: 'confirmed', fetch: creditWatchingFetch(credits) });
   // Each way of making money has an on/off switch (/features) and a circuit breaker that switches it off if it loses.
+  // v2 speed features start off until the baseline is recorded (V2_FEATURES=on switches them all on).
+  const v2 = (process.env.V2_FEATURES ?? 'off') === 'on';
   const features = new Features(ledger, [
     { name: 'adapter:tuktuk.run_task', description: 'Helium TukTuk tasks', defaultOn: true },
+    { name: FEATURE.chainClock, description: "fire on the chain's own clock (websocket), not ours", defaultOn: v2 },
+    { name: FEATURE.fastRetry, description: 'when "not ready" at the due second, retry every 150 ms', defaultOn: v2 },
+    { name: FEATURE.jitoSlots, description: 'free a send slot as soon as a race is lost; up to 10 pending Jito sends', defaultOn: v2 },
+    { name: FEATURE.parallelJobs, description: 'work on up to 4 jobs at once', defaultOn: v2 },
+    { name: FEATURE.adaptiveTip, description: 'learn the Jito tip per job type from wins and losses', defaultOn: v2 },
+    { name: 'live_tasks', description: 'new TukTuk tasks over websocket; full re-read every 10 min instead of every minute', defaultOn: v2 },
   ], t => notifier.alert(t), { thresholdLamports: cfg.breakerThresholdLamports });
+  const chainClock = new ChainClock(conn); // subscribes on first use, only while chain_clock is on
+  const tipTuner = new TipTuner(ledger, cfg.jito.tipLamports);
 
   const jobs: Job[] = [
-    new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports, agent: cfg.agentPubkey, prepareSec: 10 }),
+    new TuktukJob(conn, { minRewardLamports: BASE_FEE_PER_SIGNATURE + cfg.caps.minProfitLamports, agent: cfg.agentPubkey, prepareSec: 10, liveTasks: () => features.enabled('live_tasks') }),
   ];
 
   let summary = () => '';
@@ -60,13 +72,19 @@ async function main() {
     backgroundSettle: true,
     raceAnalysis: true,
     features,
+    chainClock,
+    tipTuner,
     jito: cfg.jito.enabled ? { client: new JitoClient(cfg.jito.url), tipLamports: cfg.jito.tipLamports } : undefined,
   });
   const publisher = new Publisher(conn, cfg, ledger, guard, 'data/snapshot.json', () => {
     const s = executor.stats;
     return { since: executor.startedAt, checks: s.checks, looked: s.candidates, profitable: s.shadow + s.sent, sent: s.sent,
       takenByOthers: s.gone, notWorthIt: s.rejected, anomalies: s.anomalies, errors: s.errors };
-  });
+  }, () => ({
+    features: features.status(),
+    chainClockLagMs: chainClock.live ? chainClock.lagMs : null,
+    tips: jobs.map(j => ({ jobType: j.type, lamports: tipTuner.tip(j.type) })),
+  }));
   const dashLink = cfg.dashboard.url ? `\n${cfg.dashboard.url}` : '';
   summary = () => executor.summaryText() + (publisher.latest ? `\n\n${shareText(publisher.latest)}` : '') + dashLink;
   share = () => (publisher.latest ? shareText(publisher.latest) : 'No data yet — give me a minute.') + dashLink;
@@ -122,7 +140,7 @@ async function main() {
   timers.push(setInterval(publish, 60_000));
 
   // Proof of life in the log every 5 minutes (shadow mode is otherwise quiet when nothing pays).
-  timers.push(setInterval(() => log.info(executor.heartbeat()), 5 * 60_000));
+  timers.push(setInterval(() => log.info(`${executor.heartbeat()} · chain clock ${chainClock.live ? `live, ${chainClock.lagMs}ms behind our clock` : 'not live'}`), 5 * 60_000));
 
   // Daily summary at 00:00 UTC.
   timers.push(setInterval(() => {

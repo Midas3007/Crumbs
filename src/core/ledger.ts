@@ -165,11 +165,11 @@ export class Ledger {
   }
 
   /** Count one candidate's end state in the funnel (cheap: one row per day, job type and reason). */
-  countReason(jobType: string, reason: ReasonCode, amounts: { gross?: bigint; cost?: bigint; shortfall?: bigint } = {}): void {
-    this.db.prepare(`INSERT INTO funnel (day, job_type, reason, n, gross_sum, cost_sum, shortfall_sum) VALUES (?, ?, ?, 1, ?, ?, ?)
-      ON CONFLICT(day, job_type, reason) DO UPDATE SET n = n + 1, gross_sum = gross_sum + excluded.gross_sum,
+  countReason(jobType: string, reason: ReasonCode, amounts: { gross?: bigint; cost?: bigint; shortfall?: bigint } = {}, delta = 1): void {
+    this.db.prepare(`INSERT INTO funnel (day, job_type, reason, n, gross_sum, cost_sum, shortfall_sum) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(day, job_type, reason) DO UPDATE SET n = n + excluded.n, gross_sum = gross_sum + excluded.gross_sum,
         cost_sum = cost_sum + excluded.cost_sum, shortfall_sum = shortfall_sum + excluded.shortfall_sum`)
-      .run(utcDay(this.now()), jobType, reason, amounts.gross ?? 0n, amounts.cost ?? 0n, amounts.shortfall ?? 0n);
+      .run(utcDay(this.now()), jobType, reason, delta, amounts.gross ?? 0n, amounts.cost ?? 0n, amounts.shortfall ?? 0n);
   }
 
   /** Funnel totals by reason, from `sinceDay` (inclusive) or all time. */

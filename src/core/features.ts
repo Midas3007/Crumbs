@@ -54,6 +54,10 @@ export class Features {
     return s;
   }
 
+  has(name: string): boolean {
+    return this.specs.some(x => x.name === name);
+  }
+
   enabled(name: string): boolean {
     const v = this.ledger.getState(`feature:${name}`);
     return v === undefined ? this.spec(name).defaultOn : v === 'on';

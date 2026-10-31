@@ -8,9 +8,10 @@ import { log } from '../core/logger.js';
 import { solUsd } from '../core/prices.js';
 import { associatedTokenAddress, USDC_MINT } from '../core/tokens.js';
 import { PublicKey } from '@solana/web3.js';
-import { buildSnapshot, type Snapshot } from './snapshot.js';
+import { buildSnapshot, type Snapshot, type SnapshotInputs } from './snapshot.js';
 
 export type ActivitySource = () => Snapshot['activity'];
+export type ExtraSource = () => Pick<SnapshotInputs, 'features' | 'chainClockLagMs' | 'tips'>;
 
 /**
  * Builds the dashboard snapshot, writes it to disk (data/snapshot.json) and, if DASHBOARD_URL is set,
@@ -21,7 +22,7 @@ export class Publisher {
   latest?: Snapshot;
   solUsd: number | null = null;
 
-  constructor(private conn: Connection, private cfg: Config, private ledger: Ledger, private guard: Guardrails, private file = 'data/snapshot.json', private activity?: ActivitySource) {}
+  constructor(private conn: Connection, private cfg: Config, private ledger: Ledger, private guard: Guardrails, private file = 'data/snapshot.json', private activity?: ActivitySource, private extra?: ExtraSource) {}
 
   async publish(): Promise<Snapshot> {
     const [price, lamports, usdc] = await Promise.all([
@@ -38,6 +39,7 @@ export class Publisher {
       activity: this.activity?.(),
       sharedCostLamports: 5_000n + (this.cfg.jito.enabled ? this.cfg.jito.tipLamports : 0n),
       minProfitLamports: this.cfg.caps.minProfitLamports,
+      ...this.extra?.(),
     });
     this.latest = snap;
 

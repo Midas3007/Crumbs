@@ -36,6 +36,12 @@ export interface Snapshot {
   latency?: LatencyStats;
   /** Unprofitable-alone jobs that would clear the minimum if base fee + tip were shared in a batch. */
   batchingPotential?: { unprofitable: number; rescuable: number };
+  /** Feature switches and their circuit-breaker P&L (lamports as strings). */
+  features?: { name: string; description: string; on: boolean; offReason?: string; sends: number; netLamports: string }[];
+  /** Wall clock minus the chain's Clock.unix_timestamp, ms (null when the websocket clock isn't live). */
+  chainClockLagMs?: number | null;
+  /** Learned Jito tip per job type (lamports as strings). */
+  tips?: { jobType: string; lamports: string }[];
 }
 
 /** Which funnel stage each reason drops out at (or ends in). */
@@ -115,6 +121,9 @@ export interface SnapshotInputs {
   /** Per-transaction cost a batch would share (base fee + tip), for the batching estimate. */
   sharedCostLamports?: bigint;
   minProfitLamports?: bigint;
+  features?: { name: string; description: string; on: boolean; offReason?: string; sends: number; netLamports: bigint }[];
+  chainClockLagMs?: number | null;
+  tips?: { jobType: string; lamports: bigint }[];
 }
 
 export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
@@ -160,6 +169,9 @@ export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
     activity: i.activity,
     funnel: { allTime: funnelEntries(ledger.funnel()), today: funnelEntries(ledger.funnel(d.day)) },
     latency: latencyStats(ledger.timings()),
+    features: i.features?.map(f => ({ ...f, netLamports: f.netLamports.toString() })),
+    chainClockLagMs: i.chainClockLagMs,
+    tips: i.tips?.map(t => ({ jobType: t.jobType, lamports: t.lamports.toString() })),
     batchingPotential: i.sharedCostLamports !== undefined && i.minProfitLamports !== undefined
       ? ledger.batchingPotential(i.sharedCostLamports, i.minProfitLamports) : undefined,
   };

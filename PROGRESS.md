@@ -106,6 +106,21 @@ Measured on mainnet (40 tasks sampled across the next 24h, plus 12 of Helium's o
 - **Contested tasks can't share a transaction:** a transaction succeeds or fails as a whole, so if Helium's bot takes one task, the whole batch drops.
 - Conclusion: batching TukTuk in one transaction isn't worth building. Per-task cost is already at the floor (5,000 base fee + 1,000 minimum Jito tip, no priority fee). The levers left are winning more races and finding more job types.
 
+## v2 upgrade — Milestones 1 and 2: faster and cheaper per task (Oct 31)
+
+Batching doesn't work for TukTuk (see the research above), so with the owner's go-ahead Milestone 1 became "win more races for free". All of these are features with their own switch and circuit breaker, and ship **off** until `reports/baseline.md` is written, so the before/after is clean.
+
+- **chain_clock:** TukTuk checks the chain's `Clock.unix_timestamp`, which runs 0.4-1.1 s behind wall time (measured on mainnet). Crumbs used to simulate at the wall-clock due second, often get "not ready", and wait a full second. Now it subscribes to the Clock sysvar over the Helius websocket (standard websockets are on the free plan, 2 credits per 0.1 MB: about 45k credits/month) and fires on the first slot whose clock reaches the due time. Falls back to the wall clock if the websocket is down.
+- **fast_retry:** if a simulation still says "not ready" at the due second, retry every 150 ms (up to 8 times) instead of after 1 s.
+- **jito_slots:** a dropped bundle used to hold one of only 3 send slots for up to ~90 s, until its blockhash expired. Now the slot is freed as soon as the task is seen gone twice, and up to 10 Jito sends may be pending (a lost bundle costs nothing). An early "lost" verdict is re-checked 90 s later and booked as landed if it did land.
+- **parallel_jobs:** up to 4 jobs at once, each waiting for its own due time, so several tasks due in the same second don't queue behind each other.
+- **adaptive_tip:** the Jito tip per job type is learned: ×1.5 after a bundle that wasn't included while the task was still open (outbid), ×1.25 after a lost race, ×0.9 after a win, never below 1,000 and never more than leaves `MIN_PROFIT_LAMPORTS` after fees (8,000 max on a 15,000 compiled task, 3,000 on a remote one).
+- **live_tasks:** new TukTuk tasks arrive over the websocket; the full ~5,700-task re-read drops from every minute to every 10 minutes (saves ~390k Helius credits/month).
+- Always on (fixes, not strategies): the blockhash is refreshed in the background so a due job never waits for it; a remembered compute measurement is only re-measured on a real compute error (a "not ready" no longer costs a second simulation).
+- **Sending:** Helius Sender is credit-free on every plan, but its cheapest tier needs a 5,000-lamport tip and is a normal transaction (a lost race still pays the fee). Jito at 1,000 lamports with free losses is better for us, so no change. Staked connections via `mainnet.helius-rpc.com` are for paid plans.
+- **Hosting:** Render Virginia ($7/month starter worker) is already close to Helius' east-coast nodes and Jito's New York block engine; the global Jito URL routes there. Moving would gain little; LaserStream/gRPC needs a $499/month plan. Recommendation: stay.
+- The snapshot now carries feature switches with their P&L, the chain-clock lag and the learned tips. 99 tests.
+
 ## Next
 
 - First full discovery pass with Claude over the seed programs (needs ANTHROPIC_API_KEY).

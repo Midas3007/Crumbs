@@ -8,6 +8,7 @@ import {
   SYSVAR_INSTRUCTIONS_PUBKEY,
   TransactionInstruction,
 } from '@solana/web3.js';
+import { base58Encode } from '../../core/base58.js';
 import { log } from '../../core/logger.js';
 import { type BuiltJob, type Candidate, type Job, JobGone, type RaceWinner, type ReasonCode, type SimOutcome } from '../../core/types.js';
 import {
@@ -30,6 +31,11 @@ export interface TuktukOptions {
    */
   prepareSec?: number;
   agent?: PublicKey;
+  /**
+   * Live tasks (feature live_tasks): new and changed tasks arrive over the websocket the moment they're
+   * written, so the full schedule only needs re-reading every 10 minutes instead of every minute.
+   */
+  liveTasks?: () => boolean;
   /** Queues to ignore (e.g. test queues). */
   denyQueues?: string[];
   now?: () => number;
@@ -84,6 +90,9 @@ export class TuktukJob implements Job {
   private refreshing?: Promise<void>;
   private staleAge = new Map<string, number>();
   private lastRecheck = new Map<string, number>();
+  private liveSub?: number;
+  /** Tasks seen over the websocket (for the report). */
+  liveUpdates = 0;
   private readonly now: () => number;
 
   constructor(private conn: Connection, private opts: TuktukOptions) {
@@ -121,6 +130,32 @@ export class TuktukJob implements Job {
     log.debug('tuktuk schedule refreshed', { tasks: this.schedule.length, queues: queueKeys.length });
   }
 
+  /** Start or stop the websocket subscription to match the live_tasks switch. Called every tick. */
+  private syncLive(): void {
+    const want = this.opts.liveTasks?.() ?? false;
+    if (want && this.liveSub === undefined) {
+      this.liveSub = this.conn.onProgramAccountChange(TUKTUK_PROGRAM_ID, ({ accountId, accountInfo }) => {
+        try {
+          this.upsert(accountId, decodeTaskHeader(accountInfo.data));
+          this.liveUpdates++;
+        } catch { /* not a task we can read */ }
+      }, { commitment: 'confirmed', filters: [{ memcmp: { offset: 0, bytes: base58Encode(TASK_DISCRIMINATOR) } }] });
+      log.info('tuktuk: live task updates on (websocket)');
+    } else if (!want && this.liveSub !== undefined) {
+      void this.conn.removeProgramAccountChangeListener(this.liveSub).catch(() => undefined);
+      this.liveSub = undefined;
+    }
+  }
+
+  /** Add or update one task in the local schedule (from the websocket). */
+  upsert(address: PublicKey, header: TaskHeader): void {
+    if ((this.opts.denyQueues ?? []).includes(header.taskQueue.toBase58())) return;
+    const key = address.toBase58();
+    const i = this.schedule.findIndex(t => t.address.toBase58() === key);
+    if (i >= 0) this.schedule[i] = { address, header };
+    else this.schedule.push({ address, header });
+  }
+
   /**
    * When to try a task, in unix seconds, or undefined for "not now".
    * - Fresh tasks: at their due time (racing the incumbent crank turner).
@@ -143,7 +178,9 @@ export class TuktukJob implements Job {
   }
 
   async detect(): Promise<Candidate[]> {
-    if (this.now() - this.scheduleAt > (this.opts.scheduleRefreshMs ?? 60_000)) {
+    this.syncLive();
+    const refreshMs = this.liveSub !== undefined ? 600_000 : (this.opts.scheduleRefreshMs ?? 60_000);
+    if (this.now() - this.scheduleAt > refreshMs) {
       // Only the very first load blocks; after that the (1-2s) refresh runs in the background.
       const refresh = this.refreshing ??= this.refreshSchedule().finally(() => { this.refreshing = undefined; });
       if (this.scheduleAt === 0) await refresh;
