@@ -23,7 +23,8 @@ its owner controls from Telegram.
   fee, priority fee and any tip, is at least `MIN_PROFIT_LAMPORTS`.
 - **Small hot wallet** (`WALLET_CAP_SOL`), a **daily loss cap** and a **per-job spend cap**. Breaching one pauses
   the agent and alerts the owner.
-- **New job types need one-tap approval** on Telegram before they go live. Until then they run in shadow mode.
+- **New job types go live automatically** (the owner's choice, `AUTO_APPROVE=true`): Telegram announces each one with a
+  one-tap **Reject**, and each gets its own circuit breaker. With `AUTO_APPROVE=false` they wait for an Approve tap.
 - **Shadow mode first**: everything except sending, with a log of what it would have earned.
 - **Bugs become bounties, not exploits**: a simulation that pays far more than documented is never executed.
 

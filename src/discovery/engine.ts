@@ -1,3 +1,4 @@
+import { newJobType } from '../core/approval.js';
 import { coveredBy } from './covered.js';
 import { type Connection, PublicKey } from '@solana/web3.js';
 import { type Config, formatSol } from '../config.js';
@@ -152,7 +153,7 @@ export class DiscoveryEngine {
         report.validated.push({ id, candidate: c, result });
         const type = discoveryJobType(id);
         const { isNew } = this.ledger.registerJobType(type, c.programName, `${c.instruction} (discovered)`, c.rewardSource);
-        if (isNew) await this.notifier.requestApproval({ jobType: type, protocol: c.programName, description: `${c.instruction} — ${c.trigger}`, rewardSource: c.rewardSource, evidence: evidenceText(c, result) });
+        if (isNew) await newJobType(this.ledger, this.notifier, this.cfg.autoApprove, { jobType: type, protocol: c.programName, description: `${c.instruction} — ${c.trigger}`, rewardSource: c.rewardSource, evidence: evidenceText(c, result) });
       } else if (result.status === 'paid_not_replayable') {
         report.proposals.push({ id, candidate: c, result });
         await this.notifier.alert(`🔎 Discovery: ${c.programName}::${c.instruction} pays its callers but needs a dedicated adapter.\n${evidenceText(c, result)}`);

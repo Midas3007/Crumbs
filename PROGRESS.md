@@ -135,6 +135,13 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - First live measurements (Oct 31, ~1 h): Crumbs started on a job a median 1.4 s after it became callable and sent at 1.7 s; Helium's crank bot (`BcS9…YdYRM`) won 14 of 15 sampled races, landing within the same second.
 - `DEMO.md` (3-minute script) and README (v2 story, threat model) updated. Checked at desktop and phone widths, light and dark, no horizontal overflow; production build passes. 101 tests.
 
+## Owner requests (Oct 31)
+
+- **Telegram menu:** every command is registered in Telegram's "/" menu on startup (`setMyCommands`), and `/menu` (or `/start`) shows all controls as buttons: Status, Share, Jobs, Features, Pause, Resume, Live, Shadow. Replies carry the next useful button (Pause → Resume, Shadow → Go live). `/jobs` has Approve or Reject for every type.
+- **¾ of earnings to USDC:** `SWEEP_FRACTION=0.75` of every lamport earned (realised P&L of live sends) is owed to USDC and carried over between checks; losses reduce it. Once ≥ `MIN_SWEEP_SOL` (now 0.001) is owed, it's swapped via Jupiter, never taking the wallet below `SOL_FLOAT_SOL` (now 0.01; the old 0.05 float was above the wallet, so nothing was ever swept). USDC stays in the agent wallet. At today's earnings the first swap is a while off; the first one also creates the wallet's USDC account (~0.002 SOL rent, held in that account, not lost). The swap path is still untested end to end (Jupiter is unreachable from the dev sandbox).
+- **Auto-approve (owner's choice, overrides the brief's one-tap rule):** `AUTO_APPROVE=true` (default) puts new job types live at once; Telegram announces them with a Reject button. A rejected type stays rejected. Every discovered job gets its own circuit breaker (`adapter:disc.N`). Anomalies are never job types, so they're still never executed.
+- 103 tests.
+
 ## Next
 
 - ~06:40 UTC Oct 31: write `reports/baseline.md` from the live snapshot, then switch the v2 features on and compare.

@@ -16,65 +16,99 @@ export function telegramConfigProblem(token: string, chatId: string): string | u
   return undefined;
 }
 
+/** Shown in Telegram's "/" menu, in this order. */
+export const COMMAND_LIST: [string, string][] = [
+  ['menu', 'All controls as buttons'],
+  ['status', 'Today so far and what the agent is doing'],
+  ['share', 'A line to share'],
+  ['jobs', 'Job types: approve or reject'],
+  ['features', 'Switch speed and profit features on or off'],
+  ['pause', 'Stop sending anything'],
+  ['resume', 'Start again after a pause'],
+  ['live', 'Go live (with checklist)'],
+  ['shadow', 'Simulate only, send nothing'],
+];
+
+/** The /menu buttons: two per row. */
+export function menuKeyboard(): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  const buttons: [string, string][] = [
+    ['📊 Status', 'status'], ['📣 Share', 'share'],
+    ['🧰 Jobs', 'jobs'], ['⚙️ Features', 'features'],
+    ['⏸️ Pause', 'pause'], ['▶️ Resume', 'resume'],
+    ['🟢 Live', 'live'], ['◌ Shadow', 'shadow'],
+  ];
+  buttons.forEach(([label, cmd], i) => { kb.text(label, `cmd|${cmd}`); if (i % 2) kb.row(); });
+  return kb;
+}
+
+const menuButton = () => new InlineKeyboard().text('☰ Menu', 'cmd|menu');
+
 /**
  * Owner controls over Telegram. Only messages from TELEGRAM_CHAT_ID are obeyed.
- *   /live /shadow /pause /resume /status /jobs /share, and one-tap Approve / Reject buttons for job types.
+ *   Every command is in Telegram's "/" menu and on the /menu buttons; job types have one-tap Approve / Reject.
  */
 export class TelegramNotifier implements Notifier {
   readonly bot: Bot;
+  private commands: Record<string, (reply: (text: string, extra?: { reply_markup: InlineKeyboard }) => Promise<unknown>) => Promise<unknown>> = {};
 
   constructor(token: string, private chatId: string, private ledger: Ledger, private guard: Guardrails, private summary: () => string, private share: () => string = summary,
     private controls?: { mode: ModeSwitch; walletLamports: () => Promise<bigint>; features?: Features }) {
     this.bot = new Bot(token);
     const owner = (id: number | undefined) => String(id) === this.chatId;
 
-    this.bot.command('pause', async ctx => {
-      if (!owner(ctx.chat?.id)) return;
-      this.guard.pause('paused from Telegram');
-      await ctx.reply('⏸️ Paused. Nothing will be sent until /resume.');
-    });
-    this.bot.command('resume', async ctx => {
-      if (!owner(ctx.chat?.id)) return;
-      const ok = this.guard.resume();
-      await ctx.reply(ok ? '▶️ Resumed.' : '🔒 Can’t resume: the CRUMBS_PAUSED env flag is set on the server.');
-    });
-    this.bot.command('status', async ctx => {
-      if (!owner(ctx.chat?.id)) return;
-      const s = this.guard.state();
-      await ctx.reply(`${this.summary()}\n\n${s.paused ? `⏸️ Paused: ${s.reason}` : '▶️ Running'}`);
-    });
-    this.bot.command('share', async ctx => {
-      if (!owner(ctx.chat?.id)) return;
-      await ctx.reply(this.share());
-    });
-    this.bot.command('jobs', async ctx => {
-      if (!owner(ctx.chat?.id)) return;
-      const types = this.ledger.listJobTypes();
-      const rows = types.map(j => `${j.status === 'approved' ? '✅' : j.status === 'rejected' ? '❌' : '⏳'} ${j.type} — ${j.protocol}`);
-      const kb = new InlineKeyboard();
-      for (const j of types.filter(t => t.status !== 'approved')) kb.text(`✅ Approve ${j.type}`, `approve|${j.type}`).row();
-      await ctx.reply(rows.join('\n') || 'No job types yet.', types.some(t => t.status !== 'approved') ? { reply_markup: kb } : {});
-    });
-    this.bot.command('live', async ctx => {
-      if (!owner(ctx.chat?.id) || !this.controls) return;
-      if (this.controls.mode.mode === 'live') return void (await ctx.reply('🟢 Already live. /shadow to stop sending.'));
-      const items = this.controls.mode.checklist(await this.controls.walletLamports(), this.guard.state());
-      const ready = this.controls.mode.canGoLive(items);
-      const text = `Go-live checklist\n\n${checklistText(items)}\n\n${ready ? 'Tap to start sending real transactions. /shadow switches back any time.' : 'Fix the ⛔ items first.'}`;
-      await ctx.reply(text, ready ? { reply_markup: new InlineKeyboard().text('🟢 Go live', 'mode|live').text('Cancel', 'mode|cancel') } : {});
-    });
-    this.bot.command('shadow', async ctx => {
-      if (!owner(ctx.chat?.id) || !this.controls) return;
-      this.controls.mode.setShadow();
-      await ctx.reply('◌ Shadow mode: simulating only, nothing will be sent. /live to go back.');
-    });
-    this.bot.command('features', async ctx => {
-      if (!owner(ctx.chat?.id) || !this.controls?.features) return;
-      await this.sendFeatures(ctx.reply.bind(ctx));
-    });
+    type Reply = (text: string, extra?: { reply_markup: InlineKeyboard }) => Promise<unknown>;
+    // Every command, usable by typing it or by tapping its button in /menu.
+    const commands: Record<string, (reply: Reply) => Promise<unknown>> = {
+      status: async reply => {
+        const s = this.guard.state();
+        return reply(`${this.summary()}\n\n${s.paused ? `⏸️ Paused: ${s.reason}` : '▶️ Running'}`, { reply_markup: menuButton() });
+      },
+      share: async reply => reply(this.share()),
+      jobs: async reply => {
+        const types = this.ledger.listJobTypes();
+        const rows = types.map(j => `${j.status === 'approved' ? '✅' : j.status === 'rejected' ? '❌' : '⏳'} ${j.type} — ${j.protocol}`);
+        const kb = new InlineKeyboard();
+        for (const j of types) kb.text(j.status === 'approved' ? `❌ Reject ${j.type}` : `✅ Approve ${j.type}`, `${j.status === 'approved' ? 'reject' : 'approve'}|${j.type}`).row();
+        return reply(rows.join('\n') || 'No job types yet.', types.length ? { reply_markup: kb } : undefined);
+      },
+      features: async reply => this.sendFeatures(reply),
+      pause: async reply => {
+        this.guard.pause('paused from Telegram');
+        return reply('⏸️ Paused. Nothing will be sent until you resume.', { reply_markup: new InlineKeyboard().text('▶️ Resume', 'cmd|resume') });
+      },
+      resume: async reply => reply(this.guard.resume() ? '▶️ Resumed.' : '🔒 Can’t resume: the CRUMBS_PAUSED env flag is set on the server.'),
+      live: async reply => {
+        if (!this.controls) return;
+        if (this.controls.mode.mode === 'live') return reply('🟢 Already live.', { reply_markup: new InlineKeyboard().text('◌ Switch to shadow', 'cmd|shadow') });
+        const items = this.controls.mode.checklist(await this.controls.walletLamports(), this.guard.state());
+        const ready = this.controls.mode.canGoLive(items);
+        const text = `Go-live checklist\n\n${checklistText(items)}\n\n${ready ? 'Tap to start sending real transactions. Shadow mode is one tap away.' : 'Fix the ⛔ items first.'}`;
+        return reply(text, ready ? { reply_markup: new InlineKeyboard().text('🟢 Go live', 'mode|live').text('Cancel', 'mode|cancel') } : undefined);
+      },
+      shadow: async reply => {
+        if (!this.controls) return;
+        this.controls.mode.setShadow();
+        return reply('◌ Shadow mode: simulating only, nothing will be sent.', { reply_markup: new InlineKeyboard().text('🟢 Go live', 'cmd|live') });
+      },
+      menu: async reply => reply('🍞 Crumbs: what do you need?', { reply_markup: menuKeyboard() }),
+    };
+    commands.start = commands.menu;
+    for (const [name, run] of Object.entries(commands)) {
+      this.bot.command(name, async ctx => {
+        if (!owner(ctx.chat?.id)) return;
+        await run(ctx.reply.bind(ctx) as Reply);
+      });
+    }
+    this.commands = commands;
+
     this.bot.on('callback_query:data', async ctx => {
       if (!owner(ctx.chat?.id ?? ctx.callbackQuery.message?.chat.id)) return ctx.answerCallbackQuery();
       const [action, type, value] = ctx.callbackQuery.data.split('|');
+      if (action === 'cmd' && this.commands[type]) {
+        await ctx.answerCallbackQuery();
+        return void (await this.commands[type](ctx.reply.bind(ctx) as Parameters<typeof this.commands[string]>[0]));
+      }
       if (action === 'feature' && this.controls?.features) {
         await ctx.answerCallbackQuery();
         this.controls.features.set(type, value === 'on');
@@ -95,7 +129,7 @@ export class TelegramNotifier implements Notifier {
         this.ledger.setJobTypeStatus(type, action === 'approve' ? 'approved' : 'rejected');
         await ctx.answerCallbackQuery({ text: action === 'approve' ? 'Approved' : 'Rejected' });
         await ctx.editMessageReplyMarkup();
-        await ctx.reply(action === 'approve' ? `✅ ${type} approved — it will run autonomously.` : `❌ ${type} rejected.`);
+        await ctx.reply(action === 'approve' ? `✅ ${type} approved — it will run autonomously.` : `❌ ${type} rejected. It won't run; /jobs to approve it again.`);
       } else {
         await ctx.answerCallbackQuery();
       }
@@ -104,6 +138,9 @@ export class TelegramNotifier implements Notifier {
   }
 
   start(): void {
+    // The "/" menu in Telegram: every command with a one-line description.
+    void this.bot.api.setMyCommands(COMMAND_LIST.map(([command, description]) => ({ command, description })))
+      .catch(e => log.warn('could not set the Telegram command menu', { error: String(e) }));
     void this.bot.start({ drop_pending_updates: true, onStart: () => log.info('telegram bot online') });
   }
 
@@ -118,6 +155,7 @@ export class TelegramNotifier implements Notifier {
     const list = f.status();
     const kb = new InlineKeyboard();
     for (const x of list) kb.text(`${x.on ? '⏹ Switch off' : '▶️ Switch on'} ${x.name}`, `feature|${x.name}|${x.on ? 'off' : 'on'}`).row();
+    kb.text('☰ Menu', 'cmd|menu');
     const lines = list.map(x => `${x.on ? '🟢' : '⚪'} ${x.name}: ${x.description}
    ${x.sends} sends, net ${x.netLamports} lamports${x.on ? '' : `\n   off: ${x.offReason}`}`);
     await reply(lines.join('\n\n') || 'No features.', { reply_markup: kb });
@@ -140,6 +178,22 @@ export class TelegramNotifier implements Notifier {
   }
 
   async requestApproval(req: ApprovalRequest): Promise<void> {
+    if (req.autoApproved) {
+      const text = [
+        '🆕 New job type is live (auto-approved)',
+        `• ${req.jobType} (${req.protocol})`,
+        `• ${req.description}`,
+        `• Reward source: ${req.rewardSource}`,
+        req.evidence ? `\n${req.evidence.slice(0, 3000)}` : '',
+        '\nEvery send is still simulated and profit-checked, and its circuit breaker switches it off if it loses. Tap Reject to stop it now.',
+      ].join('\n');
+      try {
+        await this.bot.api.sendMessage(this.chatId, text, { reply_markup: new InlineKeyboard().text('❌ Reject', `reject|${req.jobType}`) });
+      } catch (e) {
+        log.warn('telegram auto-approval notice failed', { error: String(e), jobType: req.jobType });
+      }
+      return;
+    }
     const text = [
       '🆕 New job type wants to go live',
       `• ${req.jobType} (${req.protocol})`,

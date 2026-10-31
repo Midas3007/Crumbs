@@ -188,7 +188,8 @@ test('engine: a validated discovery asks for approval and can be rebuilt as a li
   const r = await engine.run([PROGRAM]);
   assert.equal(r.validated.length, 1);
   const type = `disc.${r.validated[0].id}`;
-  assert.equal(ledger.jobTypeStatus(type), 'pending');
+  assert.equal(ledger.jobTypeStatus(type), 'approved'); // AUTO_APPROVE is on by default
+  assert.equal(notifier.approvals[0].autoApproved, true);
   assert.equal(notifier.approvals[0].jobType, type);
   assert.match(notifier.approvals[0].evidence ?? '', /Recent callers earned/);
   const spec = replaySpecFromLedger(ledger, r.validated[0].id)!;

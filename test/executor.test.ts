@@ -52,7 +52,7 @@ function setup(cfg: Config, delta: bigint, opts: Parameters<typeof fakeChain>[1]
 }
 
 test('new job types ask for approval', async () => {
-  const { ex, notifier } = setup(testConfig({ mode: 'live' }), 10_000n);
+  const { ex, notifier } = setup(testConfig({ mode: 'live', autoApprove: false }), 10_000n);
   await ex.registerJobTypes();
   assert.equal(notifier.approvals.length, 1);
   assert.equal(notifier.approvals[0].jobType, 'fake.job');
@@ -68,12 +68,25 @@ test('shadow mode never sends, but records what it would have earned', async () 
   assert.equal(ledger.daySummary().shadowNetLamports, 10_000n);
 });
 
-test('live mode: unapproved job types only run in shadow', async () => {
-  const { ex, sent } = setup(testConfig({ mode: 'live' }), 10_000n);
+test('live mode: unapproved job types only run in shadow (AUTO_APPROVE=false)', async () => {
+  const { ex, sent } = setup(testConfig({ mode: 'live', autoApprove: false }), 10_000n);
   await ex.registerJobTypes();
   const [a] = await ex.tick();
   assert.equal(a.outcome, 'shadow');
   assert.equal(sent.length, 0);
+});
+
+test('auto-approve: a new job type goes live at once, the owner gets a Reject button; a rejected type stays rejected', async () => {
+  const { ex, sent, ledger, notifier } = setup(testConfig({ mode: 'live' }), 10_000n);
+  await ex.registerJobTypes();
+  assert.equal(ledger.jobTypeStatus('fake.job'), 'approved');
+  assert.equal(notifier.approvals[0].autoApproved, true);
+  assert.equal((await ex.tick())[0].outcome, 'landed');
+  assert.equal(sent.length, 1);
+  ledger.setJobTypeStatus('fake.job', 'rejected');
+  await ex.registerJobTypes();
+  assert.equal(ledger.jobTypeStatus('fake.job'), 'rejected');
+  assert.equal((await ex.tick())[0].outcome, 'shadow');
 });
 
 test('live mode: approved + profitable gets sent and the realized P&L is booked', async () => {

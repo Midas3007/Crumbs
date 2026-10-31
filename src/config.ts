@@ -33,9 +33,11 @@ export interface Config {
   telegram?: { token: string; chatId: string };
   sweep: {
     enabled: boolean;
-    /** SOL kept in the wallet to pay fees; anything above it is swapped to USDC. */
+    /** Share of every lamport earned that's converted to USDC (default 0.75); the rest stays SOL for fees. */
+    fraction: number;
+    /** Never swap the wallet below this much SOL (it pays the fees). */
     solFloatLamports: bigint;
-    /** Don't bother swapping less than this (swap fees would eat it). */
+    /** Wait until at least this much is owed before swapping (the swap's own fee would eat smaller amounts). */
     minSweepLamports: bigint;
     /** Optional cold wallet that swept USDC is sent to. */
     coldWallet?: PublicKey;
@@ -64,6 +66,11 @@ export interface Config {
     /** Shared secret; the same value goes in the dashboard's CRUMBS_PUSH_SECRET. */
     secret?: string;
   };
+  /**
+   * New job types go live without waiting for a tap (the owner chose this). They still pass every
+   * simulation, profit, anomaly and cap check, get their own circuit breaker, and Telegram offers Reject.
+   */
+  autoApprove: boolean;
   /** A feature's circuit breaker trips when it loses more than this (first 50 sends, or any rolling hour). */
   breakerThresholdLamports: bigint;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
@@ -155,8 +162,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     telegram,
     sweep: {
       enabled: bool(env.SWEEP_TO_USDC, true),
-      solFloatLamports: sol(env.SOL_FLOAT_SOL, '0.05'),
-      minSweepLamports: sol(env.MIN_SWEEP_SOL, '0.02'),
+      fraction: Math.min(1, Math.max(0, Number(env.SWEEP_FRACTION ?? '0.75'))),
+      solFloatLamports: sol(env.SOL_FLOAT_SOL, '0.01'),
+      minSweepLamports: sol(env.MIN_SWEEP_SOL, '0.001'),
       coldWallet: env.COLD_WALLET ? new PublicKey(env.COLD_WALLET) : undefined,
       jupiterApiUrl: env.JUPITER_API_URL ?? 'https://lite-api.jup.ag/swap/v1',
     },
@@ -173,6 +181,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       url: env.JITO_URL || 'https://mainnet.block-engine.jito.wtf/api/v1',
     },
     dashboard: { url: env.DASHBOARD_URL || undefined, secret: env.DASHBOARD_SECRET || undefined },
+    autoApprove: bool(env.AUTO_APPROVE, true),
     breakerThresholdLamports: BigInt(env.BREAKER_THRESHOLD_LAMPORTS ?? '20000'),
     logLevel: (env.LOG_LEVEL ?? 'info') as Config['logLevel'],
   };

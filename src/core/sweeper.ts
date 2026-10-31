@@ -2,6 +2,7 @@ import {
   type Connection, type Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction,
 } from '@solana/web3.js';
 import { type Config, formatSol } from '../config.js';
+import type { Ledger } from './ledger.js';
 import { log } from './logger.js';
 
 import { ATA_PROGRAM_ID, associatedTokenAddress, TOKEN_PROGRAM_ID, USDC_MINT, WSOL_MINT } from './tokens.js';
@@ -9,26 +10,45 @@ import { ATA_PROGRAM_ID, associatedTokenAddress, TOKEN_PROGRAM_ID, USDC_MINT, WS
 export { USDC_MINT, WSOL_MINT };
 
 /**
- * How much SOL to convert to USDC. Keeps `solFloat` for fees; skips tiny sweeps where the swap
- * fee would eat the value. Pure, so it's easy to test.
+ * How much SOL to convert to USDC now: what's owed (a share of earnings, carried over between
+ * sweeps), as long as the wallet keeps `solFloat` for fees and the amount is worth a swap. Pure.
  */
-export function sweepAmount(balance: bigint, solFloat: bigint, minSweep: bigint): bigint {
-  const excess = balance - solFloat;
-  return excess >= minSweep ? excess : 0n;
+export function sweepAmount(owed: bigint, balance: bigint, solFloat: bigint, minSweep: bigint): bigint {
+  const room = balance - solFloat;
+  const amount = owed < room ? owed : room;
+  return amount >= minSweep ? amount : 0n;
+}
+
+/** Add `fraction` of new earnings to what's owed; losses reduce it, never below zero. */
+export function addOwed(owed: bigint, earned: bigint, fraction: number): bigint {
+  const next = owed + (earned * BigInt(Math.round(fraction * 10_000))) / 10_000n;
+  return next > 0n ? next : 0n;
 }
 
 /**
- * Earnings arrive in SOL; the owner wants USDC so they aren't exposed to SOL's price.
- * Swaps everything above the operating float to USDC via Jupiter, then (optionally) sends the
- * USDC to a cold wallet so the hot wallet stays small. Live mode only.
+ * Earnings arrive in SOL; the owner wants most of them in USDC so they don't swing with SOL's price.
+ * `fraction` (¾ by default) of every lamport earned is owed to USDC; once enough has built up to be
+ * worth a swap's fee, it's swapped via Jupiter. The other ¼ stays SOL to pay fees. Live mode only.
+ * USDC stays in the agent's wallet unless COLD_WALLET is set.
  */
 export class Sweeper {
-  constructor(private conn: Connection, private cfg: Config, private signer: Keypair, private alert: (t: string) => Promise<void>) {}
+  constructor(private conn: Connection, private cfg: Config, private signer: Keypair, private alert: (t: string) => Promise<void>, private ledger?: Ledger) {}
+
+  /** Bring what's owed up to date with earnings since the last check. */
+  owed(now = Date.now()): bigint {
+    if (!this.ledger) return 0n;
+    const since = Number(this.ledger.getState('sweep_checked_at') ?? now);
+    const owed = addOwed(BigInt(this.ledger.getState('sweep_owed') ?? '0'), this.ledger.realizedSince(since, now), this.cfg.sweep.fraction);
+    this.ledger.setState('sweep_checked_at', String(now));
+    this.ledger.setState('sweep_owed', owed.toString());
+    return owed;
+  }
 
   async maybeSweep(): Promise<string | undefined> {
     const { solFloatLamports, minSweepLamports, jupiterApiUrl } = this.cfg.sweep;
+    const owed = this.owed();
     const balance = BigInt(await this.conn.getBalance(this.signer.publicKey, 'confirmed'));
-    const amount = sweepAmount(balance, solFloatLamports, minSweepLamports);
+    const amount = sweepAmount(owed, balance, solFloatLamports, minSweepLamports);
     if (amount === 0n) return undefined;
 
     const quoteUrl = `${jupiterApiUrl}/quote?inputMint=${WSOL_MINT}&outputMint=${USDC_MINT}&amount=${amount}&slippageBps=50&restrictIntermediateTokens=true`;
@@ -53,9 +73,10 @@ export class Sweeper {
     await this.conn.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
     const usdc = (Number(quote.outAmount) / 1e6).toFixed(2);
     log.info('swept SOL to USDC', { sol: amount, usdc, signature: sig });
+    this.ledger?.setState('sweep_owed', (owed - amount).toString());
 
     if (this.cfg.sweep.coldWallet) await this.sendUsdcToCold();
-    await this.alert(`💵 Swept ${formatSol(amount)} → ~${usdc} USDC${this.cfg.sweep.coldWallet ? ' (sent to cold wallet)' : ''}\n${sig}`);
+    await this.alert(`💵 Converted ${formatSol(amount)} of earnings (${Math.round(this.cfg.sweep.fraction * 100)}% share) → ~${usdc} USDC${this.cfg.sweep.coldWallet ? ' (sent to cold wallet)' : ''}\n${sig}`);
     return sig;
   }
 

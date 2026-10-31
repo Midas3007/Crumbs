@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Guardrails } from '../src/core/caps.js';
 import { Ledger } from '../src/core/ledger.js';
-import { sweepAmount } from '../src/core/sweeper.js';
+import { addOwed, sweepAmount } from '../src/core/sweeper.js';
 import { testConfig } from './helpers.js';
 
 const caps = testConfig().caps; // wallet 0.5 SOL, daily loss 0.02 SOL, per-job 0.0002 SOL
@@ -77,8 +77,17 @@ test('kill switch: the env flag cannot be lifted from Telegram', () => {
   assert.match(g.checkBeforeSend(1n) ?? '', /CRUMBS_PAUSED/);
 });
 
-test('sweep: keeps the SOL float, skips dust', () => {
-  assert.equal(sweepAmount(120_000_000n, 50_000_000n, 20_000_000n), 70_000_000n);
-  assert.equal(sweepAmount(60_000_000n, 50_000_000n, 20_000_000n), 0n);
-  assert.equal(sweepAmount(10_000_000n, 50_000_000n, 20_000_000n), 0n);
+test('sweep: ¾ of earnings is owed to USDC; the float stays; dust waits', () => {
+  // Earned 4,000,000 → 3,000,000 owed.
+  assert.equal(addOwed(0n, 4_000_000n, 0.75), 3_000_000n);
+  // A loss reduces what's owed, never below zero.
+  assert.equal(addOwed(3_000_000n, -1_000_000n, 0.75), 2_250_000n);
+  assert.equal(addOwed(100n, -1_000_000n, 0.75), 0n);
+  // Owed 3,000,000, wallet 25,000,000, float 10,000,000, minimum 1,000,000 → swap all 3,000,000.
+  assert.equal(sweepAmount(3_000_000n, 25_000_000n, 10_000_000n, 1_000_000n), 3_000_000n);
+  // Not enough owed yet: wait.
+  assert.equal(sweepAmount(900_000n, 25_000_000n, 10_000_000n, 1_000_000n), 0n);
+  // The float caps it.
+  assert.equal(sweepAmount(30_000_000n, 25_000_000n, 10_000_000n, 1_000_000n), 15_000_000n);
+  assert.equal(sweepAmount(3_000_000n, 10_500_000n, 10_000_000n, 1_000_000n), 0n);
 });

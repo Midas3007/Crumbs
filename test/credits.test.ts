@@ -62,3 +62,11 @@ test('Telegram setup check: the bot\'s own id is caught, a real chat id passes',
   assert.match(telegramConfigProblem(token, '@me') ?? '', /must be a number/);
   assert.equal(telegramConfigProblem(token, '5123456789'), undefined);
 });
+
+test('Telegram menu: every button is a listed command', async () => {
+  const { COMMAND_LIST, menuKeyboard } = await import('../src/telegram/bot.js');
+  const listed = new Set(COMMAND_LIST.map(([c]) => c));
+  const buttons = menuKeyboard().inline_keyboard.flat().map(b => ('callback_data' in b ? b.callback_data : '') ?? '');
+  assert.equal(buttons.length, 8);
+  for (const b of buttons) assert.ok(listed.has(b.replace('cmd|', '')), b);
+});

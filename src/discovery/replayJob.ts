@@ -21,6 +21,8 @@ export const discoveryJobType = (id: number) => `disc.${id}`;
  */
 export class ReplayJob implements Job {
   readonly type: string;
+  /** Each discovered job type has its own switch and circuit breaker. */
+  readonly feature: string;
   readonly protocol: string;
   readonly description: string;
   readonly rewardSource: string;
@@ -30,6 +32,7 @@ export class ReplayJob implements Job {
 
   constructor(private conn: Connection, private spec: ReplaySpec, private windowMs = 30_000, private now: () => number = Date.now) {
     this.type = discoveryJobType(spec.discoveryId);
+    this.feature = `adapter:${this.type}`;
     this.protocol = spec.candidate.programName;
     this.description = `${spec.candidate.instruction} (discovered): ${spec.candidate.rewardSource}`;
     this.rewardSource = spec.candidate.evidence.join(' · ') || spec.candidate.rewardSource;

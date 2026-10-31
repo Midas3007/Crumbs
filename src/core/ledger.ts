@@ -371,6 +371,13 @@ export class Ledger {
     }));
   }
 
+  /** Realised P&L of live sends that settled at or after `sinceMs` (for the USDC sweep). */
+  realizedSince(sinceMs: number, untilMs: number): bigint {
+    const r = this.db.prepare(`SELECT SUM(realized_net) AS net FROM attempts
+      WHERE outcome IN ('landed','failed') AND mode = 'live' AND ts >= ? AND ts < ?`).get(sinceMs, untilMs) as { net: number | bigint | null };
+    return big(r.net);
+  }
+
   /** Live results between two times (ms): for the before/after comparison. */
   period(fromMs: number, toMs: number): { netLamports: bigint; feesLamports: bigint; landed: number; failed: number; dropped: number } {
     const r = this.db.prepare(`SELECT

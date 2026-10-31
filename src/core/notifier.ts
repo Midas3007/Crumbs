@@ -6,6 +6,8 @@ export interface ApprovalRequest {
   description: string;
   rewardSource: string;
   evidence?: string;
+  /** Already approved automatically (AUTO_APPROVE): the message only offers a one-tap Reject. */
+  autoApproved?: boolean;
 }
 
 /** How the agent talks to its owner. Telegram in production, the log otherwise. */

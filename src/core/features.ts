@@ -54,6 +54,11 @@ export class Features {
     return s;
   }
 
+  /** Add a feature at runtime (e.g. each discovered job type gets its own breaker). */
+  register(spec: FeatureSpec): void {
+    if (!this.has(spec.name)) this.specs.push(spec);
+  }
+
   has(name: string): boolean {
     return this.specs.some(x => x.name === name);
   }

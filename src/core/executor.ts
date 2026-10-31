@@ -5,6 +5,7 @@ import { clampPriorityFee, estimatePriorityFee, BASE_FEE_PER_SIGNATURE } from '.
 import type { AttemptRecord, AttemptTiming, Ledger } from './ledger.js';
 import { log } from './logger.js';
 import { base58Encode } from './base58.js';
+import { newJobType } from './approval.js';
 import type { ChainClock } from './chainClock.js';
 import type { Features } from './features.js';
 import type { TipTuner } from './tipTuner.js';
@@ -137,7 +138,7 @@ export class Executor {
     for (const job of this.jobs) {
       const { isNew, status } = this.ledger.registerJobType(job.type, job.protocol, job.description, job.rewardSource);
       if (isNew || status === 'pending') {
-        await this.notifier.requestApproval({ jobType: job.type, protocol: job.protocol, description: job.description, rewardSource: job.rewardSource });
+        await newJobType(this.ledger, this.notifier, this.cfg.autoApprove, { jobType: job.type, protocol: job.protocol, description: job.description, rewardSource: job.rewardSource });
       }
     }
   }

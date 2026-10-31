@@ -106,7 +106,7 @@ async function main() {
 
   const timers: NodeJS.Timeout[] = [];
   if (cfg.sweep.enabled && cfg.agentKeypair) {
-    const sweeper = new Sweeper(conn, cfg, cfg.agentKeypair, t => notifier.alert(t));
+    const sweeper = new Sweeper(conn, cfg, cfg.agentKeypair, t => notifier.alert(t), ledger);
     timers.push(setInterval(() => {
       if (cfg.mode !== 'live' || guard.state().paused) return; // mode can change at runtime via /live, /shadow
       sweeper.maybeSweep().catch(e => log.warn('sweep failed', { error: String(e) }));
@@ -119,7 +119,9 @@ async function main() {
       if (!m || jt.status !== 'approved' || executor.hasJob(jt.type)) continue;
       const spec = replaySpecFromLedger(ledger, Number(m[1]));
       if (spec) {
-        executor.addJob(new ReplayJob(conn, spec));
+        const job = new ReplayJob(conn, spec);
+        features.register({ name: job.feature, description: `${spec.candidate.programName}::${spec.candidate.instruction} (discovered)`, defaultOn: true });
+        executor.addJob(job);
         log.info('discovered job is live', { type: jt.type, program: spec.candidate.programName, instruction: spec.candidate.instruction });
       }
     }
