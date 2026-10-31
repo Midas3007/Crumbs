@@ -1,6 +1,8 @@
 import { CopyButton } from '@/components/CopyButton';
 import { type DayPoint, DailyChart } from '@/components/DailyChart';
-import { ago, fmtSol, fmtUsd, shareText, short, solscanAccount, solscanTx } from '@/lib/format';
+import { Funnel } from '@/components/Funnel';
+import { type MiniPoint, MiniBars } from '@/components/MiniBars';
+import { ago, fmtCrumb, fmtMs, fmtSol, fmtUsd, pct, shareText, short, solscanAccount, solscanTx } from '@/lib/format';
 import { loadSnapshot } from '@/lib/store';
 import type { Snapshot } from '@/lib/types';
 
@@ -9,6 +11,8 @@ export const dynamic = 'force-dynamic';
 const STATUS: Record<string, { color: string; icon: string; label: string }> = {
   validated: { color: 'var(--good)', icon: '✓', label: 'Validated' },
   paid_not_replayable: { color: 'var(--series-1)', icon: '◆', label: 'Needs adapter' },
+  covered: { color: 'var(--good)', icon: '✓', label: 'Already running' },
+  dropped: { color: 'var(--muted)', icon: '–', label: 'Not landed (no fee)' },
   anomaly: { color: 'var(--critical)', icon: '⚠', label: 'Anomaly · disclosed' },
   unprofitable: { color: 'var(--muted)', icon: '–', label: 'Unprofitable' },
   failed: { color: 'var(--muted)', icon: '–', label: 'Not reproducible' },
@@ -37,6 +41,34 @@ function lastDays(s: Snapshot, n = 14): DayPoint[] {
     return { day, realized: Number(d?.realizedNetLamports ?? 0), shadow: Number(d?.shadowNetLamports ?? 0), crumbs: d?.crumbs ?? 0, losses: d?.losses ?? 0 };
   });
 }
+
+/** Daily fees as a share of what protocols paid, and race win rate, over the last 14 days. */
+function dailyRates(s: Snapshot, n = 14): { fee: MiniPoint[]; win: MiniPoint[] } {
+  const byDay = new Map(s.daily.map(d => [d.day, d]));
+  const end = Date.parse(`${s.today.day}T00:00:00Z`);
+  const fee: MiniPoint[] = [];
+  const win: MiniPoint[] = [];
+  for (let i = 0; i < n; i++) {
+    const day = new Date(end - (n - 1 - i) * 86_400_000).toISOString().slice(0, 10);
+    const d = byDay.get(day);
+    const fees = Number(d?.feesLamports ?? 0);
+    const gross = Number(d?.realizedNetLamports ?? 0) + fees;
+    fee.push({ day, value: d && gross > 0 ? Math.min(1, fees / gross) : null, detail: `${fees.toLocaleString('en-US')} of ${gross.toLocaleString('en-US')} lamports` });
+    const sent = (d?.crumbs ?? 0) + (d?.losses ?? 0) + (d?.dropped ?? 0);
+    win.push({ day, value: sent ? (d?.crumbs ?? 0) / sent : null, detail: `${d?.crumbs ?? 0} won of ${sent} sent` });
+  }
+  return { fee, win };
+}
+
+const FEATURE_TEXT: Record<string, string> = {
+  'adapter:tuktuk.run_task': 'Helium TukTuk tasks',
+  chain_clock: "Fire on the chain's own clock",
+  fast_retry: 'Retry every 150 ms at the due second',
+  jito_slots: 'Free a send slot the moment a race is lost',
+  parallel_jobs: 'Up to 4 jobs at once',
+  adaptive_tip: 'Learn the Jito tip from wins and losses',
+  live_tasks: 'New tasks over websocket',
+};
 
 export default async function Page() {
   const s = await loadSnapshot();
@@ -79,7 +111,7 @@ export default async function Page() {
         <div className="card kpi">
           <div className="label">{live ? 'Net earned, all time' : 'Would have earned (shadow)'}</div>
           <div className="value">{fmtSol(net, true)}</div>
-          <div className="note">{fmtUsd(net, s.solUsd, true) ?? 'USD price unavailable'} · after every fee</div>
+          <div className="note">{fmtCrumb(net, s.solUsd, true)} · after every fee</div>
         </div>
         <div className="card kpi">
           <div className="label">{live ? 'Crumbs eaten' : 'Profitable crumbs found'}</div>
@@ -94,7 +126,7 @@ export default async function Page() {
         <div className="card kpi">
           <div className="label">Fees paid</div>
           <div className="value">{fmtSol(s.totals.feesPaidLamports)}</div>
-          <div className="note">{s.totals.anomalies} too-good-to-be-true jobs refused</div>
+          <div className="note">{fmtCrumb(s.totals.feesPaidLamports, s.solUsd)} · {s.totals.anomalies} too-good-to-be-true jobs refused</div>
         </div>
       </section>
 
@@ -110,6 +142,88 @@ export default async function Page() {
             <div><b>{s.activity.profitable.toLocaleString('en-US')}</b><span>profitable</span></div>
             <div><b>{s.activity.anomalies.toLocaleString('en-US')}</b><span>refused as too good to be true</span></div>
           </div>
+        </section>
+      ) : null}
+
+      {s.funnel ? (
+        <section className="card" aria-label="Where the jobs go" style={{ marginBottom: 16 }}>
+          <h2>Where the jobs go</h2>
+          <p className="sub">Every job Crumbs looked at, from first try to landing, and why each one dropped out. Since the measuring build (Oct 31).</p>
+          <Funnel entries={s.funnel.allTime} />
+        </section>
+      ) : null}
+
+      {s.funnel ? (() => {
+        const r = dailyRates(s);
+        return (
+          <div className="grid two" style={{ marginTop: 0, marginBottom: 16 }}>
+            <section className="card" aria-label="Fees as a share of income">
+              <h2>Fees as a share of what protocols paid</h2>
+              <p className="sub">Base fee and Jito tip on each landed job, divided by the reward. Lower is better.</p>
+              <MiniBars points={r.fee} label="Daily fees as a share of gross rewards" color="var(--series-2)" />
+            </section>
+            <section className="card" aria-label="Race win rate">
+              <h2>Race win rate</h2>
+              <p className="sub">Jobs won out of jobs sent. Lost races sent through Jito cost nothing.</p>
+              <MiniBars points={r.win} label="Daily race win rate" />
+            </section>
+          </div>
+        );
+      })() : null}
+
+      {s.latency || s.compare ? (
+        <div className="grid two" style={{ marginTop: 0, marginBottom: 16 }}>
+          {s.latency ? (
+            <section className="card" aria-label="Speed">
+              <h2>Speed</h2>
+              <p className="sub">Medians over {s.latency.samples.toLocaleString('en-US')} timed jobs, from the moment a job became callable.</p>
+              <table><tbody>
+                <tr><td>Callable → we start on it</td><td className="num">{fmtMs(s.latency.detectAfterVisible)}</td></tr>
+                <tr><td>Final simulation</td><td className="num">{fmtMs(s.latency.simulate)}</td></tr>
+                <tr><td>Callable → sent</td><td className="num">{fmtMs(s.latency.sentAfterVisible)}</td></tr>
+                <tr><td><b>Callable → landed</b> (1 s resolution)</td><td className="num"><b>{fmtMs(s.latency.landedAfterVisible)}</b></td></tr>
+                <tr><td>Winners of races we lost landed after</td><td className="num">{fmtMs(s.latency.winnerAfterVisible)}</td></tr>
+                {s.chainClockLagMs !== undefined && s.chainClockLagMs !== null ? <tr><td>Chain clock behind ours</td><td className="num">{fmtMs(s.chainClockLagMs)}</td></tr> : null}
+              </tbody></table>
+              {s.latency.winners.length ? <p className="sub" style={{ marginTop: 10, marginBottom: 0 }}>Who beats us: {s.latency.winners.map((w, i) => <span key={w.signer}>{i ? ', ' : ''}<a href={solscanAccount(w.signer)} target="_blank" rel="noreferrer" className="mono">{short(w.signer)}</a> ({w.n})</span>)}</p> : null}
+            </section>
+          ) : null}
+          {s.compare ? (
+            <section className="card" aria-label="Before and after v2">
+              <h2>Before and after v2</h2>
+              <p className="sub">{s.compare.after ? `Baseline until ${s.compare.v2Since?.slice(0, 16).replace('T', ' ')} UTC, then the v2 speed features.` : 'Baseline so far; the v2 speed features are not switched on yet.'}</p>
+              <div className="scroll"><table className="compare">
+                <thead><tr><th /><th className="num">Baseline</th><th className="num">v2</th></tr></thead>
+                <tbody>
+                  <tr><td>Hours</td><td className="num">{s.compare.before.hours}</td><td className="num">{s.compare.after?.hours ?? '—'}</td></tr>
+                  <tr><td>Earned per hour (lamports)</td><td className="num">{Number(s.compare.before.netPerHourLamports).toLocaleString('en-US')}</td><td className="num">{s.compare.after ? Number(s.compare.after.netPerHourLamports).toLocaleString('en-US') : '—'}</td></tr>
+                  <tr><td>Fees ÷ gross</td><td className="num">{pct(s.compare.before.feeShare)}</td><td className="num">{pct(s.compare.after?.feeShare)}</td></tr>
+                  <tr><td>Race win rate</td><td className="num">{pct(s.compare.before.raceWinRate)}<div className="dim">{s.compare.before.landed} of {s.compare.before.sent}</div></td><td className="num">{s.compare.after ? <>{pct(s.compare.after.raceWinRate)}<div className="dim">{s.compare.after.landed} of {s.compare.after.sent}</div></> : '—'}</td></tr>
+                  <tr><td>Net (lamports)</td><td className="num">{Number(s.compare.before.netLamports).toLocaleString('en-US')}<div className="dim">{fmtUsd(s.compare.before.netLamports, s.solUsd, true) ?? ''}</div></td><td className="num">{s.compare.after ? <>{Number(s.compare.after.netLamports).toLocaleString('en-US')}<div className="dim">{fmtUsd(s.compare.after.netLamports, s.solUsd, true) ?? ''}</div></> : '—'}</td></tr>
+                </tbody>
+              </table></div>
+              {s.batchingPotential ? <p className="sub" style={{ marginTop: 10, marginBottom: 0 }}>Rescued by batching: none. Two TukTuk tasks don&apos;t fit in one Solana transaction, so batching was researched and not built. {s.batchingPotential.rescuable} of {s.batchingPotential.unprofitable} unprofitable-alone jobs would have cleared the bar with shared fees.</p> : null}
+            </section>
+          ) : null}
+        </div>
+      ) : null}
+
+      {s.features?.length ? (
+        <section className="card" aria-label="Feature switches" style={{ marginBottom: 16 }}>
+          <h2>Switches and circuit breakers</h2>
+          <p className="sub">Each way of making money can be switched off on Telegram, and switches itself off if it loses more than 20,000 lamports over its first 50 sends or any hour.</p>
+          <div className="scroll"><table>
+            <thead><tr><th>Feature</th><th>State</th><th className="num">Sends</th><th className="num">Net</th></tr></thead>
+            <tbody>{s.features.map(f => (
+              <tr key={f.name}>
+                <td><div>{FEATURE_TEXT[f.name] ?? f.description}</div><div className="mono" style={{ color: 'var(--muted)' }}>{f.name}</div></td>
+                <td><span className="status"><span className="dot" style={{ background: f.on ? 'var(--good)' : 'var(--muted)' }} aria-hidden="true" />{f.on ? 'On' : 'Off'}</span>{!f.on && f.offReason?.startsWith('circuit') ? <div style={{ color: 'var(--critical)', fontSize: 12 }}>breaker tripped</div> : null}</td>
+                <td className="num">{f.sends}</td>
+                <td className="num">{Number(f.netLamports).toLocaleString('en-US')} lamports</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          {s.tips?.length ? <p className="sub" style={{ marginTop: 10, marginBottom: 0 }}>Jito tip now: {s.tips.map(t => `${t.jobType} ${Number(t.lamports).toLocaleString('en-US')} lamports`).join(' · ')}</p> : null}
         </section>
       ) : null}
 
@@ -164,7 +278,7 @@ export default async function Page() {
                   <td>{ago(r.ts, Date.parse(s.generatedAt))}</td>
                   <td className="mono hide-narrow">{r.jobType}</td>
                   <td>{r.signature ? <a href={solscanTx(r.signature)} target="_blank" rel="noreferrer"><Status k={r.outcome === 'failed' ? 'failed_tx' : r.outcome} /> {short(r.signature)}</a> : <Status k={r.outcome === 'failed' ? 'failed_tx' : r.outcome} />}</td>
-                  <td className="num">{fmtSol(r.netLamports, true)}</td>
+                  <td className="num">{Math.abs(Number(r.netLamports)) < 10_000_000 ? `${Number(r.netLamports) > 0 ? '+' : Number(r.netLamports) < 0 ? '−' : ''}${Math.abs(Number(r.netLamports)).toLocaleString('en-US')} lamports` : fmtSol(r.netLamports, true)}<div style={{ color: 'var(--muted)' }}>{fmtUsd(r.netLamports, s.solUsd, true) ?? ''}</div></td>
                 </tr>
               ))}</tbody>
             </table></div>
@@ -182,6 +296,7 @@ export default async function Page() {
                   <Status k={d.status} />
                 </div>
                 <div className="why">{d.summary}</div>
+                {d.score ? <div className="why">Opportunity score {d.score.toLocaleString('en-US')} lamports/h · {d.callsPerHour} calls/h · {d.competitors} bot{d.competitors === 1 ? '' : 's'} already calling it</div> : null}
                 <div className="why">AI confidence {Math.round(d.confidence * 100)}% · {ago(d.foundAt, Date.parse(s.generatedAt))} · <a href={solscanAccount(d.program)} target="_blank" rel="noreferrer">{short(d.program)}</a></div>
               </li>
             ))}</ul>

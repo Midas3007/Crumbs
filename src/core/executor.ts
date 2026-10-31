@@ -427,7 +427,8 @@ export class Executor {
     if (!force && Date.now() - this.lastWinnerLookup < WINNER_LOOKUP_EVERY_MS) return;
     this.lastWinnerLookup = Date.now();
     void job.whoTookIt(c, ours).then(w => {
-      if (!w) return;
+      // Our own earlier run of the same task isn't a lost race.
+      if (!w || w.signer === this.cfg.agentPubkey.toBase58()) return;
       // Pre-send losses have no row yet: keep one per sampled race so the report can show who wins and how fast.
       const id = attemptId ?? this.ledger.recordAttempt({
         jobType: job.type, candidateId: c.id, mode: this.cfg.mode, outcome: 'rejected', reasonCode: 'taken_by_others',

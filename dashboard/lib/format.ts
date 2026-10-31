@@ -39,3 +39,55 @@ export function shareText(s: { mode: string; solUsd: number | null; today: { cru
   }
   return `Crumbs ate ${s.today.crumbs} crumbs today: ${fmtSol(s.today.realizedNetLamports, true)}${usd(s.today.realizedNetLamports)}, ${s.today.losses} losses.`;
 }
+
+/**
+ * Crumb-sized amounts: lamports when the dollar value would round to nothing, with USD alongside.
+ * "9,000 lamports · $0.0009" rather than "0.000009 SOL".
+ */
+export function fmtCrumb(lamports: string | number | bigint, solUsd: number | null, signed = false): string {
+  const n = Number(lamports);
+  const usd = fmtUsd(lamports, solUsd, signed);
+  if (Math.abs(n) >= 10_000_000 || !usd) return `${fmtSol(lamports, signed)}${usd ? ` · ${usd}` : ''}`;
+  const sign = n < 0 ? '−' : signed && n > 0 ? '+' : '';
+  return `${sign}${Math.abs(n).toLocaleString('en-US')} lamports · ${usd}`;
+}
+
+export const pct = (x: number | null | undefined, digits = 0) => (x === null || x === undefined ? '—' : `${(x * 100).toFixed(digits)}%`);
+
+export function fmtMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return '—';
+  return Math.abs(ms) >= 10_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms).toLocaleString('en-US')} ms`;
+}
+
+/** Plain words for the agent's reason codes. */
+export const REASON_TEXT: Record<string, string> = {
+  gone_before_sim: 'already done by another bot',
+  taken_by_others: 'another bot did it first',
+  not_ready: 'not callable yet on-chain',
+  task_failing: 'stuck task (its own instruction fails)',
+  sim_failed_other: 'simulation failed',
+  build_error: 'could not build',
+  rpc_error: 'RPC error',
+  unprofitable: 'unprofitable after fees',
+  over_spend_cap: 'over the per-job spend cap',
+  unknown_balance: 'pays a token we cannot price',
+  anomaly: 'too good to be true (refused)',
+  shadow: 'shadow mode',
+  unapproved: 'job type not approved',
+  in_flight_limit: 'too many sends pending',
+  cap_blocked: 'blocked by a cap',
+  send_error: 'send failed',
+  landed: 'landed: earned',
+  failed_onchain: 'landed but failed (fee paid)',
+  lost_race: 'lost the race (no fee, Jito)',
+  not_included: 'outbid (no fee, Jito)',
+};
+
+/** Which funnel stage each reason drops out at. Mirror of src/dashboard/snapshot.ts. */
+export const REASON_STAGE: Record<string, number> = {
+  gone_before_sim: 0, build_error: 0, rpc_error: 0,
+  taken_by_others: 1, not_ready: 1, task_failing: 1, sim_failed_other: 1,
+  unprofitable: 2, over_spend_cap: 2, unknown_balance: 2, anomaly: 2,
+  shadow: 3, unapproved: 3, in_flight_limit: 3, cap_blocked: 3, send_error: 3,
+  lost_race: 4, not_included: 4, failed_onchain: 4, landed: 5,
+};

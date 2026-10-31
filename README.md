@@ -12,7 +12,8 @@ its owner controls from Telegram.
 
 > **Live dashboard: [crumbs-midart.vercel.app](https://crumbs-midart.vercel.app)** · wallet [G3ZwBYGo…FRxeKbV](https://solscan.io/account/G3ZwBYGoMXGgt4wunRjWSNkyB3J9sgUPxNq8CFRxeKbV)
 >
-> Status: Milestones 1–3 (executor core, TukTuk adapter, discovery engine, public dashboard). See [PROGRESS.md](PROGRESS.md).
+> Status: **live on mainnet** since Oct 30, 2026, earning from Helium TukTuk tasks. v2 (measure → win more races) is in.
+> See [PROGRESS.md](PROGRESS.md), the 3-minute [DEMO.md](DEMO.md), and [reports/](reports/).
 
 ## Hard rules
 
@@ -25,6 +26,44 @@ its owner controls from Telegram.
 - **New job types need one-tap approval** on Telegram before they go live. Until then they run in shadow mode.
 - **Shadow mode first**: everything except sending, with a log of what it would have earned.
 - **Bugs become bounties, not exploits**: a simulation that pays far more than documented is never executed.
+
+## v2: measure first, then win more races
+
+The first live hours told a clear story: Crumbs found profitable jobs, but most were taken first by Helium's own
+crank bot, and fees looked like two-thirds of income. v2 started by **measuring**, then fixed what the numbers showed.
+
+1. **Measure** ([reports/baseline.md](reports/baseline.md)): every job ends with one reason code (not ready yet,
+   taken by another bot, stuck task, unprofitable by how much, lost race, outbid, landed...). Each job is timed from the
+   moment it becomes callable to landing, and for lost races the winner's signer and slot are read from the chain.
+   Finding: Crumbs started a median **1.4 s** after a task became callable; Helium's bot lands **in that same second**.
+2. **Batching was researched and rejected** with numbers: two TukTuk tasks overflow Solana's 1,232-byte transaction
+   limit, and our own lookup table costs more per batch than batching saves (97% of accounts are unique per task).
+   Per-task cost is already at the floor: 5,000 base fee + Jito's 1,000 minimum tip, and a lost race costs 0.
+3. **Faster, for free** (each behind its own switch and circuit breaker): fire on the **chain's own clock** over the
+   websocket (it runs 0.4-1.1 s behind wall time, and that's what TukTuk checks), retry "not ready" every 150 ms,
+   **free a send slot the moment a race is lost** (it used to block one of 3 slots for ~90 s), work on 4 jobs at once,
+   **learn the Jito tip** per job type from wins and losses, and get new tasks over the websocket instead of re-reading
+   5,700 tasks a minute (also saves ~390k Helium credits a month).
+4. **Discovery ranks** paid instructions by reward × calls per hour ÷ competitors, so adapters get built where Crumbs
+   can win. Kamino liquidations were researched and not built: [reports/kamino-liquidations.md](reports/kamino-liquidations.md).
+
+Every change can be switched off from Telegram (`/features`) and **switches itself off if it loses money**: more than
+20,000 lamports over its first 50 sends or any rolling hour. The dashboard shows the funnel, fee share, race win rate,
+speed and a before/after table against the baseline.
+
+## Threat model
+
+| Risk | What could happen | Mitigation |
+|---|---|---|
+| Stolen hot-wallet key | Funds in the wallet are lost | Small wallet (`WALLET_CAP_SOL`; ~0.025 SOL in practice); key only in `keys/` or a Render Secret File, never logged or committed (`.gitignore`, the parser never echoes it); earnings swept to USDC |
+| Losing races | Fees paid for transactions that fail | Jito bundles only land if they succeed, so a lost race costs nothing; daily loss cap pauses the agent (`DAILY_LOSS_CAP_SOL`) |
+| A new feature misbehaves | Slow bleed of fees | Per-feature circuit breaker (first 50 sends, rolling hour) switches only that feature off and alerts |
+| Malicious or buggy protocol | A "reward" that drains us, or pays from someone else | Every send is simulated with our real wallet; only the simulated balance change counts; spend cap per job; payouts above 1.5× the documented reward are never executed (anomaly → disclosure draft); discovery's replay flags any third-party wallet or user token account losing funds |
+| AI mistakes | Claude calls a harmful instruction a "job" | Claude only proposes. Deterministic signer screen before it and on-chain replay after it; a human approves every new job type on Telegram; Claude is never in the execution path |
+| Remote task servers (TukTuk) | A server hands us accounts that escalate privileges | Only HTTPS; signer flags from the server are dropped; the result is still simulated and profit-checked |
+| RPC or price feed lies | Wrong simulation or USD value | Profit is measured in lamports from the simulation; USD is display only; Pyth account owner and feed id are checked |
+| Telegram account hijack | Someone approves jobs or goes live | Only the configured chat id is obeyed; `CRUMBS_PAUSED=true` on the server overrides Telegram; caps can't be raised from Telegram |
+| Ethics | Front-running or sandwiching users | Only keeper instructions protocols designed for anyone to call; no mempool watching of user transactions; no liquidations of users' funds outside the protocol's documented flow |
 
 ## How a job runs
 
@@ -82,9 +121,9 @@ If the Claude API or Helius runs out of credits, you get one Telegram alert (rep
 
 | Adapter | What it does | Reward | Status |
 |---|---|---|---|
-| `tuktuk.run_task` | Runs due tasks on [Helium TukTuk](https://github.com/helium/tuktuk) crank queues | The task's `crank_reward` (10,000–15,000 lamports), paid by `run_task_v0` to the caller | ✅ built, shadow-tested on mainnet |
-| Drift order filler | Fills Drift auction orders | Filler reward (`math/fees.rs`), in USDC | planned |
-| Kamino flash-loan liquidation | Liquidates with a same-tx flash loan | Liquidation bonus | to verify |
+| `tuktuk.run_task` | Runs due and stuck tasks on [Helium TukTuk](https://github.com/helium/tuktuk) crank queues | The task's `crank_reward` (10,000–15,000 lamports), paid by `run_task_v0` to the caller | ✅ live on mainnet |
+| Drift order filler | Fills Drift auction orders | Filler reward, in USDC | ❌ Drift was exploited and frozen in April 2026; its successor has had no fills |
+| Kamino liquidation | Liquidates with a same-tx flash loan | Liquidation bonus | ❌ researched, not a fit at our size ([report](reports/kamino-liquidations.md)) |
 
 OpenBook v2 `consume_events` was rejected: its event-heap penalty goes to the market, not to whoever runs the crank.
 

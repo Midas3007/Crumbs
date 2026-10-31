@@ -128,12 +128,18 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - **Kamino liquidations:** researched, not built. See `reports/kamino-liquidations.md`. $408M borrowed in the main market, but no liquidation in a 2 h sample, heavy professional competition, flash-loan + swap transactions, and a ~300 MB SDK. Recommendation: not at our size.
 - 101 tests.
 
+## v2 upgrade — Milestone 4: dashboard and pitch (Oct 31)
+
+- Dashboard: **Where the jobs go** funnel (tries → simulated → simulated OK → profitable → sent → landed) with every drop-off reason; fees as a share of what protocols paid, per day; race win rate per day; **Speed** medians (callable → start, simulate, send, land; when lost-race winners landed; chain-clock lag; who beats us); **Before and after v2** (earnings per hour, fee share, race win rate, net) with the batching finding; **Switches and circuit breakers** with each feature's sends and P&L and the learned Jito tip. Crumb-sized amounts show in lamports with USD alongside. Discovery shows opportunity scores and "Already running".
+- The snapshot carries daily fees and dropped bundles, and a before/after split at `v2_since` (saved the first time a v2 feature is on).
+- First live measurements (Oct 31, ~1 h): Crumbs started on a job a median 1.4 s after it became callable and sent at 1.7 s; Helium's crank bot (`BcS9…YdYRM`) won 14 of 15 sampled races, landing within the same second.
+- `DEMO.md` (3-minute script) and README (v2 story, threat model) updated. Checked at desktop and phone widths, light and dark, no horizontal overflow; production build passes. 101 tests.
+
 ## Next
 
-- First full discovery pass with Claude over the seed programs (needs ANTHROPIC_API_KEY).
-- Kamino flash-loan liquidation adapter (option A).
-- Deploy the dashboard on Vercel and set DASHBOARD_URL / DASHBOARD_SECRET on the agent.
-- Render deployment (`render.yaml`, a background worker with a persistent disk for SQLite).
+- ~06:40 UTC Oct 31: write `reports/baseline.md` from the live snapshot, then switch the v2 features on and compare.
+- Submission text for Encode (Nov 8) and UBC (Nov 20).
+- Optional: a watch-only Kamino liquidation counter (no sends) if the owner wants to see missed opportunities in volatile markets.
 
 ## Known issues
 

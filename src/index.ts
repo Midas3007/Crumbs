@@ -46,6 +46,14 @@ async function main() {
     { name: FEATURE.adaptiveTip, description: 'learn the Jito tip per job type from wins and losses', defaultOn: v2 },
     { name: 'live_tasks', description: 'new TukTuk tasks over websocket; full re-read every 10 min instead of every minute', defaultOn: v2 },
   ], t => notifier.alert(t), { thresholdLamports: cfg.breakerThresholdLamports });
+  // The before/after line: the first time any v2 speed feature is on. Everything earlier is the baseline.
+  const v2Since = () => {
+    const saved = ledger.getState('v2_since');
+    if (saved) return Number(saved);
+    if (!Object.values(FEATURE).some(f => features.enabled(f))) return null;
+    ledger.setState('v2_since', String(Date.now()));
+    return Date.now();
+  };
   const chainClock = new ChainClock(conn); // subscribes on first use, only while chain_clock is on
   const tipTuner = new TipTuner(ledger, cfg.jito.tipLamports);
 
@@ -84,6 +92,7 @@ async function main() {
     features: features.status(),
     chainClockLagMs: chainClock.live ? chainClock.lagMs : null,
     tips: jobs.map(j => ({ jobType: j.type, lamports: tipTuner.tip(j.type) })),
+    v2SinceMs: v2Since(),
   }));
   const dashLink = cfg.dashboard.url ? `\n${cfg.dashboard.url}` : '';
   summary = () => executor.summaryText() + (publisher.latest ? `\n\n${shareText(publisher.latest)}` : '') + dashLink;

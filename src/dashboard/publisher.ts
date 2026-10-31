@@ -11,7 +11,7 @@ import { PublicKey } from '@solana/web3.js';
 import { buildSnapshot, type Snapshot, type SnapshotInputs } from './snapshot.js';
 
 export type ActivitySource = () => Snapshot['activity'];
-export type ExtraSource = () => Pick<SnapshotInputs, 'features' | 'chainClockLagMs' | 'tips'>;
+export type ExtraSource = () => Pick<SnapshotInputs, 'features' | 'chainClockLagMs' | 'tips' | 'v2SinceMs'>;
 
 /**
  * Builds the dashboard snapshot, writes it to disk (data/snapshot.json) and, if DASHBOARD_URL is set,

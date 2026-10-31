@@ -25,7 +25,9 @@ export interface Snapshot {
     since: string | null;
   };
   today: { day: string; crumbs: number; losses: number; realizedNetLamports: string; shadowWins: number; shadowNetLamports: string };
-  daily: { day: string; realizedNetLamports: string; shadowNetLamports: string; crumbs: number; losses: number }[];
+  daily: { day: string; realizedNetLamports: string; shadowNetLamports: string; crumbs: number; losses: number;
+    /** Fees and tips paid on landed sends, and Jito bundles that didn't land (no fee). */
+    feesLamports?: string; dropped?: number }[];
   jobTypes: { type: string; protocol: string; status: string; crumbs: number; losses: number; realizedNetLamports: string; shadowWins: number; shadowNetLamports: string }[];
   recent: { ts: string; jobType: string; outcome: string; netLamports: string; signature: string | null }[];
   discoveries: { id: number; program: string; programName: string; instruction: string; status: string; confidence: number; summary: string; foundAt: string;
@@ -44,6 +46,35 @@ export interface Snapshot {
   chainClockLagMs?: number | null;
   /** Learned Jito tip per job type (lamports as strings). */
   tips?: { jobType: string; lamports: string }[];
+  /** Baseline (before the v2 features went on) vs since. */
+  compare?: { v2Since: string | null; before: PeriodStats; after: PeriodStats | null };
+}
+
+export interface PeriodStats {
+  hours: number;
+  netLamports: string;
+  feesLamports: string;
+  /** What the protocols paid before our costs: net + fees. */
+  grossLamports: string;
+  netPerHourLamports: string;
+  /** Fees as a share of gross (0-1), null with no gross. */
+  feeShare: number | null;
+  sent: number;
+  landed: number;
+  /** Landed ÷ every send that reached an outcome (landed, failed, or a bundle that didn't land). */
+  raceWinRate: number | null;
+}
+
+export function periodStats(p: ReturnType<Ledger['period']>, hours: number): PeriodStats {
+  const gross = p.netLamports + p.feesLamports;
+  const sent = p.landed + p.failed + p.dropped;
+  return {
+    hours: Math.round(hours * 10) / 10,
+    netLamports: p.netLamports.toString(), feesLamports: p.feesLamports.toString(), grossLamports: gross.toString(),
+    netPerHourLamports: hours > 0 ? BigInt(Math.round(Number(p.netLamports) / hours)).toString() : '0',
+    feeShare: gross > 0n ? Number(p.feesLamports) / Number(gross) : null,
+    sent, landed: p.landed, raceWinRate: sent ? p.landed / sent : null,
+  };
 }
 
 /** Which funnel stage each reason drops out at (or ends in). */
@@ -104,6 +135,16 @@ export function rankDiscoveries(rows: ReturnType<Ledger['listDiscoveries']>): Sn
   return items.sort((a, b) => group(a.status) - group(b.status) || (b.score ?? 0) - (a.score ?? 0));
 }
 
+function compareStats(ledger: Ledger, firstTs: number | null, v2Since: number | null, now: number): Snapshot['compare'] {
+  if (firstTs === null) return undefined;
+  const cut = v2Since ?? now;
+  return {
+    v2Since: v2Since === null ? null : new Date(v2Since).toISOString(),
+    before: periodStats(ledger.period(firstTs, cut), (cut - firstTs) / 3_600_000),
+    after: v2Since === null ? null : periodStats(ledger.period(v2Since, now + 1), (now - v2Since) / 3_600_000),
+  };
+}
+
 export function median(xs: number[]): number | null {
   if (!xs.length) return null;
   const s = [...xs].sort((a, b) => a - b);
@@ -147,6 +188,8 @@ export interface SnapshotInputs {
   features?: { name: string; description: string; on: boolean; offReason?: string; sends: number; netLamports: bigint }[];
   chainClockLagMs?: number | null;
   tips?: { jobType: string; lamports: bigint }[];
+  /** When the v2 features were switched on (ms); the baseline is everything before. */
+  v2SinceMs?: number | null;
 }
 
 export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
@@ -177,6 +220,7 @@ export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
     },
     daily: ledger.dailySeries(30).map(r => ({
       day: r.day, realizedNetLamports: r.realizedNetLamports.toString(), shadowNetLamports: r.shadowNetLamports.toString(), crumbs: r.landed, losses: r.failed,
+      feesLamports: r.feesLamports.toString(), dropped: r.dropped,
     })),
     jobTypes: ledger.byJobType().map(j => ({
       type: j.type, protocol: j.protocol, status: j.status, crumbs: j.landed, losses: j.failed,
@@ -189,6 +233,7 @@ export function buildSnapshot(ledger: Ledger, i: SnapshotInputs): Snapshot {
     activity: i.activity,
     funnel: { allTime: funnelEntries(ledger.funnel()), today: funnelEntries(ledger.funnel(d.day)) },
     latency: latencyStats(ledger.timings()),
+    compare: compareStats(ledger, t.firstTs, i.v2SinceMs ?? null, (i.now ?? new Date()).getTime()),
     features: i.features?.map(f => ({ ...f, netLamports: f.netLamports.toString() })),
     chainClockLagMs: i.chainClockLagMs,
     tips: i.tips?.map(t => ({ jobType: t.jobType, lamports: t.lamports.toString() })),

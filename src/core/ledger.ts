@@ -353,10 +353,12 @@ export class Ledger {
   }
 
   /** One row per UTC day for the last `days` days that had activity. */
-  dailySeries(days = 30): { day: string; realizedNetLamports: bigint; shadowNetLamports: bigint; landed: number; failed: number; shadowWins: number }[] {
+  dailySeries(days = 30): { day: string; realizedNetLamports: bigint; shadowNetLamports: bigint; landed: number; failed: number; shadowWins: number; feesLamports: bigint; dropped: number }[] {
     const since = utcDay(this.now() - (days - 1) * 86_400_000);
     const rows = this.db.prepare(`SELECT day,
         SUM(CASE WHEN outcome IN ('landed','failed') THEN realized_net ELSE 0 END) AS realized_net,
+        SUM(CASE WHEN outcome IN ('landed','failed') THEN sim_cost ELSE 0 END) AS fees,
+        SUM(CASE WHEN outcome = 'dropped' THEN 1 ELSE 0 END) AS dropped,
         SUM(CASE WHEN outcome = 'shadow' AND verdict = 'profitable' THEN sim_net ELSE 0 END) AS shadow_net,
         SUM(CASE WHEN outcome = 'landed' THEN 1 ELSE 0 END) AS landed,
         SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
@@ -365,7 +367,20 @@ export class Ledger {
     return rows.map(r => ({
       day: String(r.day), realizedNetLamports: big(r.realized_net), shadowNetLamports: big(r.shadow_net),
       landed: Number(r.landed ?? 0), failed: Number(r.failed ?? 0), shadowWins: Number(r.shadow_wins ?? 0),
+      feesLamports: big(r.fees), dropped: Number(r.dropped ?? 0),
     }));
+  }
+
+  /** Live results between two times (ms): for the before/after comparison. */
+  period(fromMs: number, toMs: number): { netLamports: bigint; feesLamports: bigint; landed: number; failed: number; dropped: number } {
+    const r = this.db.prepare(`SELECT
+        SUM(CASE WHEN outcome IN ('landed','failed') THEN realized_net ELSE 0 END) AS net,
+        SUM(CASE WHEN outcome IN ('landed','failed') THEN sim_cost ELSE 0 END) AS fees,
+        SUM(CASE WHEN outcome = 'landed' THEN 1 ELSE 0 END) AS landed,
+        SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
+        SUM(CASE WHEN outcome = 'dropped' THEN 1 ELSE 0 END) AS dropped
+      FROM attempts WHERE ts >= ? AND ts < ? AND mode = 'live'`).get(fromMs, toMs) as Record<string, number | bigint | null>;
+    return { netLamports: big(r.net), feesLamports: big(r.fees), landed: Number(r.landed ?? 0), failed: Number(r.failed ?? 0), dropped: Number(r.dropped ?? 0) };
   }
 
   /** Per job type: what it has earned live and in shadow. */
