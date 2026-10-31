@@ -167,6 +167,11 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - This is how ORE's checkpoint bounty was found. A live trial (30 blocks) reported 7 patterns, mostly game players claiming their own rewards (Star Atlas SAGE, GODL); discovery's checks filter those. Lead to check by hand: GODL (`mineWsRs…`) is an ORE fork and may carry the same checkpoint bounty.
 - 113 tests.
 
+## ORE: patient batching (Oct 31, evening)
+
+- Live numbers: a claim alone nets +4,000 (10,000 − 5,000 fee − 1,000 tip); five in one transaction net +44,000 (~8,800 each). 48 claims landed, none lost to anyone else.
+- So Crumbs is now **patient**: it holds claimable bounties until it has 5, or one is within 4 h of expiry (they're claimable for ~16 h). If a bounty it was holding is claimed by someone else, it goes **greedy** (claim at once) for 24 h and logs it. Expected: roughly doubles ORE income while nobody competes. 115 tests.
+
 ## Next
 
 - Measure a clean v2 window with the tip fix; if Helius credits get tight, stop racing fresh tasks the incumbent always wins.

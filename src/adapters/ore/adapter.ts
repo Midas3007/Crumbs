@@ -31,14 +31,21 @@ export const ORE_BATCH = 5;
 /** Stop claiming this close to expiry (a round closing mid-flight just pays nothing). */
 const EXPIRY_MARGIN_SLOTS = 150n;
 /**
- * Claim as soon as a bounty is claimable, up to 5 per transaction (one base fee and tip for all).
- * Waiting to fill a batch was tried first, but bounties turned out scarce (often 1 claimable at a time)
- * and claimable ones disappeared within 2 h (Oct 31): a single claim nets ~4,000, a lost one 0.
+ * Batching pays: alone a claim nets ~4,000 (10,000 − 5,000 fee − 1,000 tip); five in one transaction net
+ * ~44,000 (~8,800 each). Measured Oct 31: 48 claims landed, none lost to anyone else, so by default Crumbs
+ * is *patient*: it holds claimable bounties until it has a full batch or one is within 4 h of expiry.
+ * If a bounty it was holding gets claimed by someone else, it switches to *greedy* (claim at once) for 24 h.
  */
-export function batches<T extends { expiresAt: bigint }>(ready: T[], _slot: bigint, size = ORE_BATCH): T[][] {
+const PATIENT_UNTIL_SLOTS = 4n * 3600n * 1000n / 400n;
+const GREEDY_FOR_MS = 24 * 3_600_000;
+
+export function batches<T extends { expiresAt: bigint }>(ready: T[], slot: bigint, size = ORE_BATCH, greedy = true): T[][] {
   const sorted = [...ready].sort((a, b) => (a.expiresAt < b.expiresAt ? -1 : a.expiresAt > b.expiresAt ? 1 : 0));
   const out: T[][] = [];
-  for (let i = 0; i < sorted.length; i += size) out.push(sorted.slice(i, i + size));
+  for (let i = 0; i < sorted.length; i += size) {
+    const batch = sorted.slice(i, i + size);
+    if (greedy || batch.length === size || batch[0].expiresAt - slot <= PATIENT_UNTIL_SLOTS) out.push(batch);
+  }
   return out;
 }
 
@@ -89,6 +96,11 @@ export class OreCheckpointJob implements Job {
   private unsettled: OreMiner[] = [];
   private expiries = new Map<bigint, bigint | null>();
   private scannedAt = 0;
+  /** Claimable bounties we're holding back to fill a batch (miner → round). */
+  private held = new Map<string, bigint>();
+  private greedyUntil = 0;
+  /** Bounties someone else claimed while we held them (for the log and tests). */
+  lostWhileHolding = 0;
   private scanning?: Promise<void>;
   private readonly rpc: Rpc;
 
@@ -96,7 +108,7 @@ export class OreCheckpointJob implements Job {
    * `listingUrl` serves the big miner listing (~35k accounts, a few MB): the public RPC by default, to
    * save Helius credits. `conn` does everything else.
    */
-  constructor(private conn: Connection, listingUrl: string, private opts: { scanMs?: number; now?: () => number } = {}) {
+  constructor(private conn: Connection, listingUrl: string, private opts: { scanMs?: number; now?: () => number; patient?: boolean } = {}) {
     this.rpc = async (method, params) => {
       const res = await fetch(listingUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(60_000) });
       const j = await res.json() as { result?: unknown; error?: { message: string } };
@@ -132,9 +144,28 @@ export class OreCheckpointJob implements Job {
       const infos = await this.conn.getMultipleAccountsInfo(chunk.map(roundAddress), 'confirmed');
       infos.forEach((info, j) => this.expiries.set(chunk[j], info && info.data.length >= ROUND_EXPIRES_AT + 8 ? info.data.readBigUInt64LE(ROUND_EXPIRES_AT) : null));
     }
+    this.noteScan(out);
+    log.info('ore: scanned miners', { miners: fees.length, unsettled: out.length });
+  }
+
+  /** Take a fresh list of unsettled miners; if any bounty we were holding is gone, someone else claimed it. */
+  noteScan(out: OreMiner[]): void {
+    // Did anyone claim a bounty we were holding? Then stop waiting for a while.
+    const still = new Set(out.map(m => `${m.miner}@${m.round}`));
+    const lost = [...this.held].filter(([miner, round]) => !still.has(`${miner}@${round}`)).length;
+    if (lost) {
+      this.lostWhileHolding += lost;
+      this.greedyUntil = this.now() + GREEDY_FOR_MS;
+      log.warn('ore: bounties we were holding were claimed by someone else; claiming at once for 24 h', { lost });
+    }
+    this.held.clear();
     this.unsettled = out;
     this.scannedAt = this.now();
-    log.info('ore: scanned miners', { miners: fees.length, unsettled: out.length });
+  }
+
+  /** Claiming everything at once (after a held bounty was lost), rather than filling batches. */
+  get greedy(): boolean {
+    return this.opts.patient === false || this.now() < this.greedyUntil;
   }
 
   async detect(): Promise<Candidate[]> {
@@ -148,7 +179,11 @@ export class OreCheckpointJob implements Job {
       .map(m => ({ ...m, expiresAt: this.expiries.get(m.round)! }));
     // One candidate per batch of up to ORE_BATCH miners: one base fee and one tip for all of them.
     const out: Candidate[] = [];
-    for (const batch of batches(ready, slot)) {
+    const send = batches(ready, slot, ORE_BATCH, this.greedy);
+    const sending = new Set(send.flat().map(m => m.miner));
+    // Held = waiting for a fuller batch. Ones we send now aren't held (their disappearance is our own claim).
+    for (const m of ready) if (sending.has(m.miner)) this.held.delete(m.miner); else this.held.set(m.miner, m.round);
+    for (const batch of send) {
       out.push({
         id: `ore:${batch.map(m => `${m.miner}@${m.round}`).join(',')}`,
         jobType: this.type,

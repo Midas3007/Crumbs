@@ -63,11 +63,44 @@ test('ore: build re-reads miners, drops the ones settled meanwhile, and expects 
   await assert.rejects(new OreCheckpointJob(allDone, 'x').build({ ...c, data: [c.data[0]] }, AGENT), JobGone);
 });
 
-test('ore: claims straight away, up to 5 per transaction, most urgent first', () => {
+test('ore: patient by default (full batches, or within 4 h of expiry); greedy claims everything at once', () => {
   const slot = 1_000_000n;
   const far = (n: number) => Array.from({ length: n }, (_, i) => ({ id: i, expiresAt: slot + 100_000n + BigInt(i) }));
-  assert.deepEqual(batches(far(1), slot).map(b => b.length), [1]);
-  assert.deepEqual(batches(far(7), slot).map(b => b.length), [5, 2]);
-  const [b] = batches([...far(2), { id: 99, expiresAt: slot + 10_000n }], slot);
+  assert.deepEqual(batches(far(3), slot, 5, false).map(b => b.length), []); // wait for more
+  assert.deepEqual(batches(far(7), slot, 5, false).map(b => b.length), [5]); // full batch goes, 2 wait
+  const soon = [...far(2), { id: 99, expiresAt: slot + 30_000n }]; // ~3.3 h left
+  const [b] = batches(soon, slot, 5, false);
+  assert.equal(b.length, 3);
   assert.equal(b[0].id, 99);
+  assert.deepEqual(batches(far(1), slot, 5, true).map(b => b.length), [1]);
+  assert.deepEqual(batches(far(7), slot, 5, true).map(b => b.length), [5, 2]);
+});
+
+test('ore: a held bounty claimed by someone else switches to claiming at once for 24 h', () => {
+  let now = 0;
+  const job = new OreCheckpointJob({} as Connection, 'x', { now: () => now });
+  const m = (miner: string) => ({ miner, round: 5n, fee: 10_000n });
+  job.noteScan([m('a'), m('b')]);
+  (job as unknown as { held: Map<string, bigint> }).held.set('a', 5n);
+  (job as unknown as { held: Map<string, bigint> }).held.set('b', 5n);
+  job.noteScan([m('b')]); // 'a' vanished while we held it
+  assert.equal(job.lostWhileHolding, 1);
+  assert.equal(job.greedy, true);
+  now += 24 * 3_600_000 + 1;
+  assert.equal(job.greedy, false);
+});
+
+test('ore: our own claims of held bounties are not counted as lost', async () => {
+  let now = 0;
+  const conn = { getSlot: async () => 1_000_000 } as unknown as Connection;
+  const job = new OreCheckpointJob(conn, 'x', { now: () => now, scanMs: 1e12 });
+  const priv = job as unknown as { scannedAt: number; expiries: Map<bigint, bigint | null> };
+  const miners = ['a', 'b', 'c', 'd', 'e', 'f'].map(miner => ({ miner, round: 5n, fee: 10_000n }));
+  job.noteScan(miners);
+  priv.expiries.set(5n, 1_000_000n + 100_000n);
+  const [batch] = await job.detect(); // 5 go now, 1 is held
+  assert.equal((batch.data as unknown[]).length, 5);
+  job.noteScan([miners[5]]); // the 5 we claimed are gone; the held one is still there
+  assert.equal(job.lostWhileHolding, 0);
+  assert.equal(job.greedy, false);
 });
