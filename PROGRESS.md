@@ -142,9 +142,15 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - **Auto-approve (owner's choice, overrides the brief's one-tap rule):** `AUTO_APPROVE=true` (default) puts new job types live at once; Telegram announces them with a Reject button. A rejected type stays rejected. Every discovered job gets its own circuit breaker (`adapter:disc.N`). Anomalies are never job types, so they're still never executed.
 - 103 tests.
 
+## Baseline report (Oct 31, 06:37)
+
+- `reports/baseline.md`. The v2 features were switched on from Telegram at 03:17, so the window is mostly v2; the ledger split gives the before/after: v1 4.6 h, 16 sent, 7 landed (44%), +32,856 lamports; v2 3.3 h, 140 sent, 1 landed, +2,000.
+- v2 is fast enough to race fresh tasks (sent 528 ms after callable, from 1.7 s) but Helium's bot lands in the same second and won 254 of 257 sampled races. Lost bundles are free.
+- **Fixed `adaptive_tip`:** it raised the tip on every lost race, hit its cap and cut the one v2 win to +2,000. It now rises only when outbid while the task is still open; learned tips reset (`tip_v2:` keys).
+
 ## Next
 
-- ~06:40 UTC Oct 31: write `reports/baseline.md` from the live snapshot, then switch the v2 features on and compare.
+- Measure a clean v2 window with the tip fix; if Helius credits get tight, stop racing fresh tasks the incumbent always wins.
 - Submission text for Encode (Nov 8) and UBC (Nov 20).
 - Optional: a watch-only Kamino liquidation counter (no sends) if the owner wants to see missed opportunities in volatile markets.
 

@@ -34,14 +34,14 @@ test('chain clock: decodes the Clock sysvar and fires on the first slot at the d
   assert.equal(await fired, true);
 });
 
-test('adaptive tip: up when outbid, a little up when out-raced, down when winning; capped by the margin', () => {
+test('adaptive tip: up when outbid, unchanged when out-raced, down when winning; capped by the margin', () => {
   const t = new TipTuner(new Ledger(':memory:'), 1_000n);
   t.learn('x', 'not_included');
   assert.equal(t.tip('x'), 1_500n);
-  t.learn('x', 'lost_race');
-  assert.equal(t.tip('x'), 1_875n);
+  t.learn('x', 'lost_race'); // a faster bot isn't outbidding us: a bigger tip wouldn't help
+  assert.equal(t.tip('x'), 1_500n);
   t.learn('x', 'landed');
-  assert.equal(t.tip('x'), 1_687n);
+  assert.equal(t.tip('x'), 1_350n);
   for (let i = 0; i < 30; i++) t.learn('x', 'landed');
   assert.equal(t.tip('x'), 1_000n); // never below Jito's minimum
   for (let i = 0; i < 30; i++) t.learn('x', 'not_included');
@@ -148,12 +148,12 @@ test('parallel jobs: four jobs due together are worked on at once', async () => 
 
 test('adaptive tip: the learned tip goes into the transaction and the profit guard sees it', async () => {
   const { ex, ledger } = setup([FEATURE.adaptiveTip], chain({ status: 'landed' }), new DueJob());
-  ledger.setState('tip:fake.job', '4000');
+  ledger.setState('tip_v2:fake.job', '4000');
   await ex.registerJobTypes();
   ledger.setJobTypeStatus('fake.job', 'approved');
   const [a] = await ex.tick();
   assert.equal(a.decision?.costLamports, 5_000n + 4_000n);
-  assert.equal(ledger.getState('tip:fake.job'), '3600'); // a win lets it drift down
+  assert.equal(ledger.getState('tip_v2:fake.job'), '3600'); // a win lets it drift down
 });
 
 test('live tasks: a task arriving over the websocket joins the schedule', async () => {
