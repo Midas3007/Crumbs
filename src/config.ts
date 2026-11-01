@@ -67,6 +67,8 @@ export interface Config {
     url?: string;
     /** Shared secret; the same value goes in the dashboard's CRUMBS_PUSH_SECRET. */
     secret?: string;
+    /** How often to push to the dashboard (storage writes are metered on free plans). */
+    pushEveryMs: number;
   };
   /**
    * New job types go live without waiting for a tap (the owner chose this). They still pass every
@@ -183,7 +185,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       tipLamports: BigInt(env.JITO_TIP_LAMPORTS ?? '1000'),
       url: env.JITO_URL || 'https://mainnet.block-engine.jito.wtf/api/v1',
     },
-    dashboard: { url: env.DASHBOARD_URL || undefined, secret: env.DASHBOARD_SECRET || undefined },
+    dashboard: { url: env.DASHBOARD_URL || undefined, secret: env.DASHBOARD_SECRET || undefined, pushEveryMs: Number(env.DASHBOARD_PUSH_MINUTES ?? '10') * 60_000 },
     autoApprove: bool(env.AUTO_APPROVE, true),
     breakerThresholdLamports: BigInt(env.BREAKER_THRESHOLD_LAMPORTS ?? '20000'),
     logLevel: (env.LOG_LEVEL ?? 'info') as Config['logLevel'],

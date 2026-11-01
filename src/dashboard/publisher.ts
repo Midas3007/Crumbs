@@ -19,6 +19,9 @@ export type ExtraSource = () => Pick<SnapshotInputs, 'features' | 'chainClockLag
  */
 export class Publisher {
   private lastPushError = '';
+  private lastPushAt = -Infinity;
+  /** Overridable for tests. */
+  now: () => number = Date.now;
   latest?: Snapshot;
   solUsd: number | null = null;
 
@@ -46,8 +49,12 @@ export class Publisher {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileSync(this.file, JSON.stringify(snap, null, 2));
 
-    const { url, secret } = this.cfg.dashboard;
-    if (url && secret) {
+    const { url, secret, pushEveryMs } = this.cfg.dashboard;
+    // Every push is a write to the dashboard's storage, which free plans count; a minute-by-minute
+    // push (~43k writes a month) outgrew Vercel Blob's free allowance. The local file stays per-minute.
+    const due = this.now() - this.lastPushAt >= pushEveryMs || !!this.lastPushError;
+    if (url && secret && due) {
+      this.lastPushAt = this.now();
       try {
         const res = await fetch(new URL('/api/snapshot', url), {
           method: 'POST',

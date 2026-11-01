@@ -178,6 +178,11 @@ Batching doesn't work for TukTuk (see the research above), so with the owner's g
 - Submission text for Encode (Nov 8) and UBC (Nov 20).
 - Optional: a watch-only Kamino liquidation counter (no sends) if the owner wants to see missed opportunities in volatile markets.
 
+## Dashboard storage lost (Nov 1)
+
+- The dashboard showed "No data yet": its Vercel Blob store (`store_TXAJdipwvkbuzL83`) no longer exists (Vercel API: "Blob not found"), while `BLOB_STORE_ID` still points at it. The agent kept running and earning (wallet transactions every few minutes). Likely cause: one write a minute (~43k a month) is far beyond what the free plan's Blob store allows.
+- Fix on our side: the agent now pushes every `DASHBOARD_PUSH_MINUTES` (default 10, ~4.3k writes a month) and keeps the per-minute local snapshot. The owner needs to create a new Blob store and connect it to the project (the Vercel connector can't create stores on this account).
+
 ## Known issues
 
 - Replay validation can only prove jobs that work on *shared* state (recurring cranks). One-shot jobs are flagged as proposals for a dedicated adapter.
